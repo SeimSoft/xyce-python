@@ -21,6 +21,7 @@
 //-------------------------------------------------------------------------
 
 #include <N_DEV_PythonDevice.h>
+#include <set>
 #include <N_DEV_SolverState.h>
 #include <N_DEV_Message.h>
 #include <N_LAS_Vector.h>
@@ -129,8 +130,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
         .def("transition_to", [](VoltageOutput& vo, double v, double dt){
             if (g_activeInstance) {
                 vo.transition_to(v, dt, g_activeInstance->getSolverState().currTime_);
-                // Auto-register breakpoint for end of transition
-                g_activeInstance->addNextBreakpoint(g_activeInstance->getSolverState().currTime_ + dt);
+                g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt);
             }
         }, pybind11::arg("v"), pybind11::arg("dt"));
     pybind11::class_<CurrentOutput>(m, "CurrentOutput")
@@ -139,9 +139,17 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
         .def("transition_to", [](CurrentOutput& co, double i, double dt){
             if (g_activeInstance) {
                 co.transition_to(i, dt, g_activeInstance->getSolverState().currTime_);
-                g_activeInstance->addNextBreakpoint(g_activeInstance->getSolverState().currTime_ + dt);
+                g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt);
             }
         }, pybind11::arg("i"), pybind11::arg("dt"));
+    
+    m.def("add_breakpoint", [](double t) {
+        if (g_activeInstance) g_activeInstance->add_breakpoint(t);
+    });
+    // For backwards compatibility during transition if needed
+    m.def("set_next_breakpoint", [](double t) {
+        if (g_activeInstance) g_activeInstance->add_breakpoint(t);
+    });
 }
 
 
@@ -207,18 +215,40 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
 
     // Initialize Python device
     g_activeInstance = this;
-    if (!model.pythonPath_.empty()) {
-        PythonInterface::getInstance().addSearchPath(model.pythonPath_);
-    }
-    if (!model.moduleName_.empty() && !model.className_.empty()) {
-        pyDevice_ = PythonInterface::getInstance().createDevice(model.moduleName_, model.className_);
-        if (pyDevice_ && !pyDevice_.is_none()) {
-            pyDevice_.attr("set_next_breakpoint") = pybind11::cpp_function([this](double t){
-                this->addNextBreakpoint(t);
-            });
+    try {
+        if (!model.pythonPath_.empty()) {
+            PythonInterface::getInstance().addSearchPath(model.pythonPath_);
         }
+        if (!model.moduleName_.empty() && !model.className_.empty()) {
+            pyDevice_ = PythonInterface::getInstance().createDevice(model.moduleName_, model.className_);
+            if (pyDevice_.is_none()) {
+                Xyce::Device::UserFatal0(*this) << "Python device instantiation failed. Module: " 
+                                                << model.moduleName_ << " Class: " << model.className_;
+            }
+        }
+    } catch (const pybind11::error_already_set& e) {
+        std::cerr << "Python __init__ failed: " << e.what() << std::endl;
+        Xyce::Device::UserFatal0(*this) << "Fatal error during Python device initialization.";
     }
     g_activeInstance = nullptr;
+
+    // Create default VoltageOutputs at 0V for any pin not claimed by the Python device
+    {
+        std::set<int> claimedPins;
+        for (auto& in : inputs_) claimedPins.insert(in->get_index());
+        for (auto& ro : resistorOutputs_) claimedPins.insert(ro->get_index());
+        for (auto& vo : voltageOutputs_) claimedPins.insert(vo->get_index());
+        for (auto& co : currentOutputs_) claimedPins.insert(co->get_index());
+
+        for (int i = 0; i < numExtVars; ++i) {
+            if (claimedPins.find(i) == claimedPins.end()) {
+                std::unique_ptr<VoltageOutput> defaultVo(new VoltageOutput(i));
+                defaultVo->set_value(0.0);
+                voltageOutputs_.push_back(defaultVo.get());
+                defaultVoltageOutputs_.push_back(std::move(defaultVo));
+            }
+        }
+    }
 
     // Setup Jacobian stamp (all-to-all for python device)
     jacStamp_.resize(numExtVars);
@@ -253,21 +283,12 @@ bool Instance::loadDAEFVector()
     try {
         double time = getSolverState().currTime_;
         
-        // Call update if time has changed (start of new step or DC)
-        if (time != lastUpdateTime_) {
-            // Update input voltages for Python to read
-            for (auto& in : inputs_) {
-                int lid = extLIDs_[in->get_index()];
-                if (lid >= 0) in->set_voltage((*extData.nextSolVectorPtr)[lid]);
-                else in->set_voltage(0.0);
-            }
-            
-            g_activeInstance = this;
-            if (pybind11::hasattr(pyDevice_, "update")) {
-                pyDevice_.attr("update")(time);
-            }
-            g_activeInstance = nullptr;
-            lastUpdateTime_ = time;
+        // Update input voltages at every iteration so they are available for any logic
+        // though currently Python update is move to acceptStep.
+        for (auto& in : inputs_) {
+            int lid = extLIDs_[in->get_index()];
+            if (lid >= 0) in->set_voltage((*extData.nextSolVectorPtr)[lid]);
+            else in->set_voltage(0.0);
         }
 
 
@@ -313,6 +334,7 @@ bool Instance::loadDAEFVector()
 
     } catch (const pybind11::error_already_set& e) {
         std::cerr << "Python update failed: " << e.what() << std::endl;
+        Xyce::Device::UserFatal0(*this) << "Fatal error in Python update call.";
     }
 
 
@@ -367,18 +389,49 @@ void Instance::acceptStep()
 
     try {
         double time = getSolverState().currTime_;
-        pyDevice_.attr("accept_step")(time);
+        
+        // Remove past breakpoints definitively
+        auto it = nextBreakpoints_.begin();
+        while (it != nextBreakpoints_.end() && *it < time - 1e-12) {
+            it = nextBreakpoints_.erase(it);
+        }
+
+        // Update input voltages one last time with converged values
+        for (auto& in : inputs_) {
+            int lid = extLIDs_[in->get_index()];
+            if (lid >= 0) in->set_voltage((*extData.nextSolVectorPtr)[lid]);
+            else in->set_voltage(0.0);
+        }
+
+        // Only call Python update when time has actually advanced
+        if (time > lastUpdateTime_ + 1e-15) {
+            lastUpdateTime_ = time;
+            g_activeInstance = this;
+            if (pybind11::hasattr(pyDevice_, "update")) {
+                pyDevice_.attr("update")(time);
+            }
+            if (pybind11::hasattr(pyDevice_, "accept_step")) {
+                pyDevice_.attr("accept_step")(time);
+            }
+            g_activeInstance = nullptr;
+        }
     } catch (const pybind11::error_already_set& e) {
-        // Ignore or log
+        std::cerr << "Python acceptStep/update failed: " << e.what() << std::endl;
+        Xyce::Device::UserFatal0(*this) << "Fatal error during Python step acceptance.";
     }
 }
 
-bool Instance::getBreakPoints(std::vector<Util::BreakPoint> &breakPointTimes, std::vector<Util::BreakPoint> &pauseBreakPointTimes)
+bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointTimes)
 {
+    double currentTime = getSolverState().currTime_;
+    
+    // Add all future breakpoints to Xyce
     for (double t : nextBreakpoints_) {
-        breakPointTimes.push_back(Util::BreakPoint(t));
+        if (t >= currentTime - 1e-15) {
+            breakPointTimes.push_back(Util::BreakPoint(t));
+        }
     }
-    nextBreakpoints_.clear();
+    
     return true;
 }
 

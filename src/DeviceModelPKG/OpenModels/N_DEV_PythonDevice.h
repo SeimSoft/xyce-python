@@ -156,8 +156,7 @@ public:
   virtual bool loadDAEdQdx() { return true; }
   
   virtual void acceptStep();
-  virtual bool getBreakPoints(std::vector<Util::BreakPoint> & breakPointTimes,
-                             std::vector<Util::BreakPoint> & pauseBreakPointTimes);
+  virtual bool getInstanceBreakPoints(std::vector<Util::BreakPoint> & breakPointTimes);
 
   virtual void loadNodeSymbols(Util::SymbolTable &symbol_table) const override;
 
@@ -165,7 +164,7 @@ public:
   void registerResistorOutput(ResistorOutput* ro) { resistorOutputs_.push_back(ro); }
   void registerVoltageOutput(VoltageOutput* vo) { voltageOutputs_.push_back(vo); }
   void registerCurrentOutput(CurrentOutput* co) { currentOutputs_.push_back(co); }
-  void addNextBreakpoint(double t) { nextBreakpoints_.push_back(t); }
+  void add_breakpoint(double t) { nextBreakpoints_.insert(t); }
 
 private:
   pybind11::object pyDevice_;
@@ -180,7 +179,8 @@ private:
   std::vector<ResistorOutput*> resistorOutputs_;
   std::vector<VoltageOutput*> voltageOutputs_;
   std::vector<CurrentOutput*> currentOutputs_;
-  std::vector<double> nextBreakpoints_;
+  std::vector<std::unique_ptr<VoltageOutput>> defaultVoltageOutputs_;
+  std::set<double> nextBreakpoints_;
   double lastUpdateTime_;
 };
 

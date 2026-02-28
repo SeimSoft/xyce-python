@@ -48,6 +48,7 @@ PythonInterface::PythonInterface() {
             builtins.attr("ResistorOutput") = device_mod.attr("ResistorOutput");
             builtins.attr("VoltageOutput") = device_mod.attr("VoltageOutput");
             builtins.attr("CurrentOutput") = device_mod.attr("CurrentOutput");
+            builtins.attr("add_breakpoint") = device_mod.attr("add_breakpoint");
         }
     } catch (const pybind11::error_already_set& e) {
         std::cerr << "Python initialization failed: " << e.what() << std::endl;
