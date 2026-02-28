@@ -503,14 +503,14 @@ bool DeviceBlock::extractBasicDeviceData( const TokenVector & parsedInputLine , 
   std::string modelType;
   ModelFoundState modelFound = extractModelName( parsedInputLine, modelType, modelLevel, modelNamePosition, modelBinning, scale );
   
-  std::cout << "DEBUG extractBasicDeviceData: getInstanceName()=" << getInstanceName() 
+  /*std::cout << "DEBUG extractBasicDeviceData: getInstanceName()=" << getInstanceName() 
             << ", getNetlistDeviceType()=" << getNetlistDeviceType() 
             << ", numFields=" << numFields 
             << ", modelFound=" << modelFound 
             << ", modelType=" << modelType 
             << ", modelLevel=" << modelLevel 
             << ", modelNamePosition=" << modelNamePosition 
-            << std::endl;
+            << std::endl;*/
 
   if (modelFound == MODEL_NOT_FOUND)
     return false;
@@ -552,9 +552,9 @@ bool DeviceBlock::extractBasicDeviceData( const TokenVector & parsedInputLine , 
 
   // Process optional nodes
   n_req = metadata_.getNumberOfNodes(getNetlistDeviceType(), modelLevel);
-  std::cout << "DEBUG extractBasicDeviceData: metadata n_req=" << n_req 
+  /*std::cout << "DEBUG extractBasicDeviceData: metadata n_req=" << n_req 
             << " for deviceType=" << getNetlistDeviceType() 
-            << " and modelLevel=" << modelLevel << std::endl;
+            << " and modelLevel=" << modelLevel << std::endl;*/
   int nodesFound = n_req;
   n_opt = metadata_.getNumberOfOptionalNodes(getNetlistDeviceType(), modelLevel);
   std::string primaryDeviceParameter(
@@ -1792,7 +1792,7 @@ DeviceBlock::extractModelName(
   for (size_t fieldno = model_search_begin_index; fieldno < model_search_end_index; ++fieldno )
   {
     const std::string &model_name = parsedInputLine[fieldno].string_;
-    std::cout << "DEBUG extractModelName: fieldno=" << fieldno << ", model_name=" << model_name << std::endl;
+    //std::cout << "DEBUG extractModelName: fieldno=" << fieldno << ", model_name=" << model_name << std::endl;
     if (device_type == "K") 
     {
       if (model_name == "=" && !equal_nocase(parsedInputLine[fieldno - 1].string_, "K"))
@@ -1805,13 +1805,13 @@ DeviceBlock::extractModelName(
     }
 
     foundTheModel = circuitContext_.findModel(model_name, modelPtr);
-    std::cout << "DEBUG extractModelName: findModel result=" << foundTheModel << std::endl;
+    //std::cout << "DEBUG extractModelName: findModel result=" << foundTheModel << std::endl;
 
     if (foundTheModel) 
     { 
       modelType = modelPtr->getType();
       modelLevel = modelPtr->getLevel();
-      std::cout << "DEBUG extractModelName: found modelType=" << modelType << ", modelLevel=" << modelLevel << std::endl;
+      //std::cout << "DEBUG extractModelName: found modelType=" << modelType << ", modelLevel=" << modelLevel << std::endl;
       int modelStatus = checkIfModelValid(modelType, modelLevel, fieldno);
       if (modelStatus==-1) { foundTheModel=false; modelFound = MODEL_NOT_FOUND; break; } // this means invalid model level. ie, we found a user-defined error
       else if (modelStatus==1)

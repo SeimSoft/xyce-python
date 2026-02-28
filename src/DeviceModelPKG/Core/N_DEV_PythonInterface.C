@@ -39,8 +39,15 @@ PythonInterface::PythonInterface() {
             // Add current directory to path
             pybind11::module_ sys = pybind11::module_::import("sys");
             sys.attr("path").attr("append")(".");
-            // Also add a common search path if needed, e.g. /Users/rennekef/Documents/XYCE-Python/python
             sys.attr("path").attr("append")("/Users/rennekef/Documents/XYCE-Python");
+
+            // Inject classes into builtins
+            pybind11::module_ device_mod = pybind11::module_::import("xyce_device");
+            pybind11::module_ builtins = pybind11::module_::import("builtins");
+            builtins.attr("Input") = device_mod.attr("Input");
+            builtins.attr("ResistorOutput") = device_mod.attr("ResistorOutput");
+            builtins.attr("VoltageOutput") = device_mod.attr("VoltageOutput");
+            builtins.attr("CurrentOutput") = device_mod.attr("CurrentOutput");
         }
     } catch (const pybind11::error_already_set& e) {
         std::cerr << "Python initialization failed: " << e.what() << std::endl;
@@ -59,6 +66,16 @@ pybind11::object PythonInterface::createDevice(const std::string& moduleName, co
     } catch (const pybind11::error_already_set& e) {
         std::cerr << "Failed to create Python device " << moduleName << "." << className << ": " << e.what() << std::endl;
         return pybind11::none();
+    }
+}
+
+void PythonInterface::addSearchPath(const std::string& path) {
+    if (path.empty()) return;
+    try {
+        pybind11::module_ sys = pybind11::module_::import("sys");
+        sys.attr("path").attr("append")(path);
+    } catch (const pybind11::error_already_set& e) {
+        std::cerr << "Failed to add path to sys.path: " << e.what() << std::endl;
     }
 }
 

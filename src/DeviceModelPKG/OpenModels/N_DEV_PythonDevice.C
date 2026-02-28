@@ -37,6 +37,7 @@ ParametricData<PythonDevice::Model>::ParametricData()
 {
   addPar("MODULE", std::string(""), &PythonDevice::Model::moduleName_);
   addPar("CLASS", std::string(""), &PythonDevice::Model::className_);
+  addPar("PYTHONPATH", std::string(""), &PythonDevice::Model::pythonPath_);
 }
 
 template<>
@@ -46,7 +47,108 @@ ParametricData<PythonDevice::Instance>::ParametricData()
 
 namespace PythonDevice {
 
+namespace {
+Instance* g_activeInstance = nullptr;
+}
+
+Input::Input(int index) : index_(index), voltage_(0.0) {
+    if (g_activeInstance) g_activeInstance->registerInput(this);
+}
+
+ResistorOutput::ResistorOutput(int index, double r, Input* vhigh, Input* vlow)
+    : index_(index), r_(r), vhigh_(vhigh), vlow_(vlow), state_(0), current_(0.0) {
+    if (g_activeInstance) g_activeInstance->registerResistorOutput(this);
+}
+
+VoltageOutput::VoltageOutput(int index)
+    : index_(index), startValue_(0.0), targetValue_(0.0), startTime_(0.0), dt_(0.0), inTransition_(false) {
+    if (g_activeInstance) g_activeInstance->registerVoltageOutput(this);
+}
+
+void VoltageOutput::transition_to(double v, double dt, double currentTime) {
+    if (dt <= 0) {
+        set_value(v);
+        return;
+    }
+    startValue_ = get_current_value(currentTime);
+    targetValue_ = v;
+    startTime_ = currentTime;
+    dt_ = dt;
+    inTransition_ = true;
+}
+
+double VoltageOutput::get_current_value(double t) const {
+    if (!inTransition_ || t <= startTime_) return startValue_;
+    if (t >= startTime_ + dt_) return targetValue_;
+    return startValue_ + (targetValue_ - startValue_) * ((t - startTime_) / dt_);
+}
+
+CurrentOutput::CurrentOutput(int index)
+    : index_(index), startValue_(0.0), targetValue_(0.0), startTime_(0.0), dt_(0.0), inTransition_(false) {
+    if (g_activeInstance) g_activeInstance->registerCurrentOutput(this);
+}
+
+void CurrentOutput::transition_to(double i, double dt, double currentTime) {
+    if (dt <= 0) {
+        set_value(i);
+        return;
+    }
+    startValue_ = get_current_value(currentTime);
+    targetValue_ = i;
+    startTime_ = currentTime;
+    dt_ = dt;
+    inTransition_ = true;
+}
+
+double CurrentOutput::get_current_value(double t) const {
+    if (!inTransition_ || t <= startTime_) return startValue_;
+    if (t >= startTime_ + dt_) return targetValue_;
+    return startValue_ + (targetValue_ - startValue_) * ((t - startTime_) / dt_);
+}
+
+
+int ResistorOutput::get_vhigh_node() const {
+    return vhigh_ ? vhigh_->get_index() : -1;
+}
+
+int ResistorOutput::get_vlow_node() const {
+    return vlow_ ? vlow_->get_index() : -1;
+}
+
+PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
+    pybind11::class_<Input>(m, "Input")
+        .def(pybind11::init<int>())
+        .def("get_v", &Input::get_v);
+    pybind11::class_<ResistorOutput>(m, "ResistorOutput")
+        .def(pybind11::init<int, double, Input*, Input*>())
+        .def("set_state", &ResistorOutput::set_state)
+        .def("get_i", &ResistorOutput::get_i);
+    pybind11::class_<VoltageOutput>(m, "VoltageOutput")
+        .def(pybind11::init<int>())
+        .def("set_value", &VoltageOutput::set_value)
+        .def("transition_to", [](VoltageOutput& vo, double v, double dt){
+            if (g_activeInstance) {
+                vo.transition_to(v, dt, g_activeInstance->getSolverState().currTime_);
+                // Auto-register breakpoint for end of transition
+                g_activeInstance->addNextBreakpoint(g_activeInstance->getSolverState().currTime_ + dt);
+            }
+        }, pybind11::arg("v"), pybind11::arg("dt"));
+    pybind11::class_<CurrentOutput>(m, "CurrentOutput")
+        .def(pybind11::init<int>())
+        .def("set_value", &CurrentOutput::set_value)
+        .def("transition_to", [](CurrentOutput& co, double i, double dt){
+            if (g_activeInstance) {
+                co.transition_to(i, dt, g_activeInstance->getSolverState().currTime_);
+                g_activeInstance->addNextBreakpoint(g_activeInstance->getSolverState().currTime_ + dt);
+            }
+        }, pybind11::arg("i"), pybind11::arg("dt"));
+}
+
+
+
+
 Device *Traits::factory(const Configuration &configuration, const FactoryBlock &factory_block)
+
 {
     return new DeviceMaster<Traits>(configuration, factory_block, factory_block.solverState_, factory_block.deviceOptions_);
 }
@@ -92,7 +194,8 @@ bool Model::processInstanceParams()
 
 Instance::Instance(const Configuration &configuration, const InstanceBlock &instance_block, Model &model, const FactoryBlock &factory_block)
   : DeviceInstance(instance_block, configuration.getInstanceParameters(), factory_block),
-    model_(model)
+    model_(model),
+    lastUpdateTime_(-1.0)
 {
     numExtVars = instance_block.numExtVars;
     numIntVars = 0;
@@ -103,9 +206,19 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
     updateDependentParameters();
 
     // Initialize Python device
+    g_activeInstance = this;
+    if (!model.pythonPath_.empty()) {
+        PythonInterface::getInstance().addSearchPath(model.pythonPath_);
+    }
     if (!model.moduleName_.empty() && !model.className_.empty()) {
         pyDevice_ = PythonInterface::getInstance().createDevice(model.moduleName_, model.className_);
+        if (pyDevice_ && !pyDevice_.is_none()) {
+            pyDevice_.attr("set_next_breakpoint") = pybind11::cpp_function([this](double t){
+                this->addNextBreakpoint(t);
+            });
+        }
     }
+    g_activeInstance = nullptr;
 
     // Setup Jacobian stamp (all-to-all for python device)
     jacStamp_.resize(numExtVars);
@@ -139,27 +252,69 @@ bool Instance::loadDAEFVector()
 
     try {
         double time = getSolverState().currTime_;
-        pybind11::list voltages;
-        for (int i=0; i<numExtVars; ++i) {
-            int lid = extLIDs_[i];
+        
+        // Call update if time has changed (start of new step or DC)
+        if (time != lastUpdateTime_) {
+            // Update input voltages for Python to read
+            for (auto& in : inputs_) {
+                int lid = extLIDs_[in->get_index()];
+                if (lid >= 0) in->set_voltage((*extData.nextSolVectorPtr)[lid]);
+                else in->set_voltage(0.0);
+            }
+            
+            g_activeInstance = this;
+            if (pybind11::hasattr(pyDevice_, "update")) {
+                pyDevice_.attr("update")(time);
+            }
+            g_activeInstance = nullptr;
+            lastUpdateTime_ = time;
+        }
+
+
+        // Load residuals from resistor outputs
+        for (auto& ro : resistorOutputs_) {
+            int outIdx = ro->get_index();
+            int outLid = extLIDs_[outIdx];
+            if (outLid < 0) continue;
+            
+            int state = ro->get_state();
+            int srcIdx = (state == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
+            int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
+            
+            double vOut = (*extData.nextSolVectorPtr)[outLid];
+            double vSrc = (srcLid >= 0) ? (*extData.nextSolVectorPtr)[srcLid] : 0.0;
+            
+            double i = (vOut - vSrc) / ro->get_r();
+            ro->set_current(i);
+            
+            (*extData.daeFVectorPtr)[outLid] += i;
+            if (srcLid >= 0) {
+                (*extData.daeFVectorPtr)[srcLid] -= i;
+            }
+        }
+        
+        // Load voltage outputs (penalty method)
+        for (auto& vo : voltageOutputs_) {
+            int lid = extLIDs_[vo->get_index()];
             if (lid >= 0) {
-                voltages.append((*extData.nextSolVectorPtr)[lid]);
-            } else {
-                voltages.append(0.0);
+                double v = (*extData.nextSolVectorPtr)[lid];
+                double g = 1e6; // Conductance (stiff source)
+                (*extData.daeFVectorPtr)[lid] += (v - vo->get_current_value(time)) * g;
+            }
+        }
+        
+        // Load current outputs
+        for (auto& co : currentOutputs_) {
+            int lid = extLIDs_[co->get_index()];
+            if (lid >= 0) {
+                (*extData.daeFVectorPtr)[lid] += co->get_current_value(time);
             }
         }
 
-        pybind11::list currents = pyDevice_.attr("evaluate_f")(time, voltages);
-        
-        for (int i=0; i<numExtVars; ++i) {
-            int lid = extLIDs_[i];
-            if (lid >= 0) {
-                (*extData.daeFVectorPtr)[lid] += currents[i].cast<double>();
-            }
-        }
     } catch (const pybind11::error_already_set& e) {
-        std::cerr << "Python evaluate_f failed: " << e.what() << std::endl;
+        std::cerr << "Python update failed: " << e.what() << std::endl;
     }
+
 
     return true;
 }
@@ -168,38 +323,43 @@ bool Instance::loadDAEdFdx()
 {
     if (!pyDevice_ || pyDevice_.is_none()) return true;
 
-    try {
-        double time = getSolverState().currTime_;
-        pybind11::list voltages;
-        for (int i=0; i<numExtVars; ++i) {
-            int lid = extLIDs_[i];
-            if (lid >= 0) {
-                voltages.append((*extData.nextSolVectorPtr)[lid]);
-            } else {
-                voltages.append(0.0);
-            }
-        }
-
-        pybind11::list jacobian = pyDevice_.attr("evaluate_jacobian")(time, voltages);
+    for (auto& ro : resistorOutputs_) {
+        int outIdx = ro->get_index();
+        int outLid = extLIDs_[outIdx];
+        if (outLid < 0) continue;
         
-        for (int i=0; i<numExtVars; ++i) {
-            int iRowLid = extLIDs_[i];
-            if (iRowLid < 0) continue;
-            
-            pybind11::list row = jacobian[i].cast<pybind11::list>();
-            for (int j=0; j<numExtVars; ++j) {
-                int iColLid = jacLIDs_[i][j];
-                if (iColLid >= 0) {
-                    (*extData.dFdxMatrixPtr)[iRowLid][iColLid] += row[j].cast<double>();
-                }
-            }
+        int state = ro->get_state();
+        int srcIdx = (state == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
+        int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
+        
+        double g = 1.0 / ro->get_r();
+        
+        // dIout/dVout
+        (*extData.dFdxMatrixPtr)[outLid][jacLIDs_[outIdx][outIdx]] += g;
+        
+        if (srcLid >= 0) {
+            // dIout/dVsrc
+            (*extData.dFdxMatrixPtr)[outLid][jacLIDs_[outIdx][srcIdx]] -= g;
+            // dIsrc/dVout
+            (*extData.dFdxMatrixPtr)[srcLid][jacLIDs_[srcIdx][outIdx]] -= g;
+            // dIsrc/dVsrc
+            (*extData.dFdxMatrixPtr)[srcLid][jacLIDs_[srcIdx][srcIdx]] += g;
         }
-    } catch (const pybind11::error_already_set& e) {
-        // Fallback or warning
     }
-
+    
+    // Voltage outputs Jacobian
+    for (auto& vo : voltageOutputs_) {
+        int idx = vo->get_index();
+        int lid = extLIDs_[idx];
+        if (lid >= 0) {
+            double g = 1e6;
+            (*extData.dFdxMatrixPtr)[lid][jacLIDs_[idx][idx]] += g;
+        }
+    }
+    
     return true;
 }
+
 
 void Instance::acceptStep()
 {
@@ -215,16 +375,10 @@ void Instance::acceptStep()
 
 bool Instance::getBreakPoints(std::vector<Util::BreakPoint> &breakPointTimes, std::vector<Util::BreakPoint> &pauseBreakPointTimes)
 {
-    if (!pyDevice_ || pyDevice_.is_none()) return true;
-
-    try {
-        pybind11::list pts = pyDevice_.attr("get_breakpoints")();
-        for (auto item : pts) {
-            breakPointTimes.push_back(Util::BreakPoint(item.cast<double>()));
-        }
-    } catch (const pybind11::error_already_set& e) {
-        // Ignore
+    for (double t : nextBreakpoints_) {
+        breakPointTimes.push_back(Util::BreakPoint(t));
     }
+    nextBreakpoints_.clear();
     return true;
 }
 
@@ -241,13 +395,13 @@ void registerDevice(const DeviceCountMap& deviceMap, const std::set<int>& levelS
 {
   static bool initialized = false;
 
-  std::cout << "DEBUG PythonDevice::registerDevice: deviceMap size=" << deviceMap.size() << std::endl;
-  if (deviceMap.find("N") != deviceMap.end()) std::cout << "DEBUG PythonDevice::registerDevice: 'N' found in deviceMap" << std::endl;
+  //std::cout << "DEBUG PythonDevice::registerDevice: deviceMap size=" << deviceMap.size() << std::endl;
+  //if (deviceMap.find("N") != deviceMap.end()) std::cout << "DEBUG PythonDevice::registerDevice: 'N' found in deviceMap" << std::endl;
 
   if (!initialized && (deviceMap.empty() || (deviceMap.find("N")!=deviceMap.end()))) 
   {
     initialized = true;
-    std::cout << "DEBUG PythonDevice::registerDevice: Registering 'n' and 'npy'" << std::endl;
+    //std::cout << "DEBUG PythonDevice::registerDevice: Registering 'n' and 'npy'" << std::endl;
 
     Config<Traits>::addConfiguration()
       .registerDevice("n", 1)

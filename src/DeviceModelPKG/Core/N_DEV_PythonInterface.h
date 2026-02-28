@@ -48,6 +48,7 @@ public:
      * @return pybind11::object The instantiated Python object.
      */
     pybind11::object createDevice(const std::string& moduleName, const std::string& className);
+    void addSearchPath(const std::string& path);
 
     /**
      * @brief Check if initialized.

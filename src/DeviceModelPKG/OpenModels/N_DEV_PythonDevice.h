@@ -34,8 +34,82 @@ namespace Xyce {
 namespace Device {
 namespace PythonDevice {
 
+class Input {
+public:
+    Input(int index);
+    double get_v() const { return voltage_; }
+    void set_voltage(double v) { voltage_ = v; }
+    int get_index() const { return index_; }
+private:
+    int index_;
+    double voltage_;
+};
+
+class ResistorOutput {
+public:
+    ResistorOutput(int index, double r, Input* vhigh, Input* vlow);
+    void set_state(int state) { state_ = state; }
+    int get_state() const { return state_; }
+    int get_index() const { return index_; }
+    double get_r() const { return r_; }
+    int get_vhigh_node() const;
+    int get_vlow_node() const;
+    double get_i() const { return current_; }
+    void set_current(double i) { current_ = i; }
+private:
+    int index_;
+    double r_;
+    Input* vhigh_;
+    Input* vlow_;
+    int state_;
+    double current_;
+};
+
+class VoltageOutput {
+public:
+    VoltageOutput(int index);
+    void set_value(double v) {
+        targetValue_ = v;
+        startValue_ = v;
+        dt_ = 0;
+        inTransition_ = false;
+    }
+    void transition_to(double v, double dt, double currentTime);
+    double get_current_value(double t) const;
+    int get_index() const { return index_; }
+private:
+    int index_;
+    double startValue_;
+    double targetValue_;
+    double startTime_;
+    double dt_;
+    bool inTransition_;
+};
+
+class CurrentOutput {
+public:
+    CurrentOutput(int index);
+    void set_value(double i) {
+        targetValue_ = i;
+        startValue_ = i;
+        dt_ = 0;
+        inTransition_ = false;
+    }
+    void transition_to(double i, double dt, double currentTime);
+    double get_current_value(double t) const;
+    int get_index() const { return index_; }
+private:
+    int index_;
+    double startValue_;
+    double targetValue_;
+    double startTime_;
+    double dt_;
+    bool inTransition_;
+};
+
 class Model;
 class Instance;
+
 
 struct Traits : public DeviceTraits<Model, Instance>
 {
@@ -87,6 +161,12 @@ public:
 
   virtual void loadNodeSymbols(Util::SymbolTable &symbol_table) const override;
 
+  void registerInput(Input* input) { inputs_.push_back(input); }
+  void registerResistorOutput(ResistorOutput* ro) { resistorOutputs_.push_back(ro); }
+  void registerVoltageOutput(VoltageOutput* vo) { voltageOutputs_.push_back(vo); }
+  void registerCurrentOutput(CurrentOutput* co) { currentOutputs_.push_back(co); }
+  void addNextBreakpoint(double t) { nextBreakpoints_.push_back(t); }
+
 private:
   pybind11::object pyDevice_;
   
@@ -95,6 +175,13 @@ private:
   std::vector<int> extLIDs_;
   std::vector<std::vector<int>> jacLIDs_;
   std::vector<std::vector<int>> jacStamp_;
+
+  std::vector<Input*> inputs_;
+  std::vector<ResistorOutput*> resistorOutputs_;
+  std::vector<VoltageOutput*> voltageOutputs_;
+  std::vector<CurrentOutput*> currentOutputs_;
+  std::vector<double> nextBreakpoints_;
+  double lastUpdateTime_;
 };
 
 class Model : public DeviceModel
@@ -125,6 +212,7 @@ public:
 private:
   std::string moduleName_;
   std::string className_;
+  std::string pythonPath_;
 
   std::vector<Instance*> instanceContainer;
 };
