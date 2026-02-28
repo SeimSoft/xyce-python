@@ -35,13 +35,13 @@ namespace Device {
 template<>
 ParametricData<PythonDevice::Model>::ParametricData()
 {
+  addPar("MODULE", std::string(""), &PythonDevice::Model::moduleName_);
+  addPar("CLASS", std::string(""), &PythonDevice::Model::className_);
 }
 
 template<>
 ParametricData<PythonDevice::Instance>::ParametricData()
 {
-  addPar("MODULE", std::string(""), &PythonDevice::Instance::moduleName_);
-  addPar("CLASS", std::string(""), &PythonDevice::Instance::className_);
 }
 
 namespace PythonDevice {
@@ -59,7 +59,11 @@ void Traits::loadInstanceParameters(ParametricData<Instance> &instance_parameter
 
 Model::Model(const Configuration &configuration, const ModelBlock &model_block, const FactoryBlock &factory_block)
   : DeviceModel(model_block, configuration.getModelParameters(), factory_block)
-{}
+{
+    setDefaultParams();
+    setParams(model_block.params);
+    updateDependentParameters();
+}
 
 Model::~Model()
 {}
@@ -99,8 +103,8 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
     updateDependentParameters();
 
     // Initialize Python device
-    if (!moduleName_.empty() && !className_.empty()) {
-        pyDevice_ = PythonInterface::getInstance().createDevice(moduleName_, className_);
+    if (!model.moduleName_.empty() && !model.className_.empty()) {
+        pyDevice_ = PythonInterface::getInstance().createDevice(model.moduleName_, model.className_);
     }
 
     // Setup Jacobian stamp (all-to-all for python device)
@@ -137,13 +141,21 @@ bool Instance::loadDAEFVector()
         double time = getSolverState().currTime_;
         pybind11::list voltages;
         for (int i=0; i<numExtVars; ++i) {
-            voltages.append((*extData.nextSolVectorPtr)[extLIDs_[i]]);
+            int lid = extLIDs_[i];
+            if (lid >= 0) {
+                voltages.append((*extData.nextSolVectorPtr)[lid]);
+            } else {
+                voltages.append(0.0);
+            }
         }
 
         pybind11::list currents = pyDevice_.attr("evaluate_f")(time, voltages);
         
         for (int i=0; i<numExtVars; ++i) {
-            (*extData.daeFVectorPtr)[extLIDs_[i]] -= currents[i].cast<double>();
+            int lid = extLIDs_[i];
+            if (lid >= 0) {
+                (*extData.daeFVectorPtr)[lid] += currents[i].cast<double>();
+            }
         }
     } catch (const pybind11::error_already_set& e) {
         std::cerr << "Python evaluate_f failed: " << e.what() << std::endl;
@@ -160,17 +172,26 @@ bool Instance::loadDAEdFdx()
         double time = getSolverState().currTime_;
         pybind11::list voltages;
         for (int i=0; i<numExtVars; ++i) {
-            voltages.append((*extData.nextSolVectorPtr)[extLIDs_[i]]);
+            int lid = extLIDs_[i];
+            if (lid >= 0) {
+                voltages.append((*extData.nextSolVectorPtr)[lid]);
+            } else {
+                voltages.append(0.0);
+            }
         }
 
         pybind11::list jacobian = pyDevice_.attr("evaluate_jacobian")(time, voltages);
         
         for (int i=0; i<numExtVars; ++i) {
+            int iRowLid = extLIDs_[i];
+            if (iRowLid < 0) continue;
+            
             pybind11::list row = jacobian[i].cast<pybind11::list>();
             for (int j=0; j<numExtVars; ++j) {
-                int iRow = extLIDs_[i];
-                int iCol = jacLIDs_[i][j];
-                (*extData.dFdxMatrixPtr)[iRow][iCol] += row[j].cast<double>();
+                int iColLid = jacLIDs_[i][j];
+                if (iColLid >= 0) {
+                    (*extData.dFdxMatrixPtr)[iRowLid][iColLid] += row[j].cast<double>();
+                }
             }
         }
     } catch (const pybind11::error_already_set& e) {
@@ -229,8 +250,8 @@ void registerDevice(const DeviceCountMap& deviceMap, const std::set<int>& levelS
     std::cout << "DEBUG PythonDevice::registerDevice: Registering 'n' and 'npy'" << std::endl;
 
     Config<Traits>::addConfiguration()
-      .registerDevice("N", 101)
-      .registerModelType("NPY", 1);
+      .registerDevice("n", 1)
+      .registerModelType("npy", 1);
   }
 }
 

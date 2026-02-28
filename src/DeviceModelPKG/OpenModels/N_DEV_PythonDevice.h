@@ -41,7 +41,7 @@ struct Traits : public DeviceTraits<Model, Instance>
 {
     static const char *name() {return "Python Device";}
     static const char *deviceTypeName() {return "NPY level 1 (Python Device)";};
-    static int numNodes() {return 2;}
+    static int numNodes() {return 8;}
     static int numOptionalNodes() {return 0;}
     static bool isLinearDevice() {return false;}
 
@@ -88,8 +88,6 @@ public:
   virtual void loadNodeSymbols(Util::SymbolTable &symbol_table) const override;
 
 private:
-  std::string moduleName_;
-  std::string className_;
   pybind11::object pyDevice_;
   
   Model & model_;
@@ -125,6 +123,9 @@ public:
   virtual bool processParams() { return true; }
 
 private:
+  std::string moduleName_;
+  std::string className_;
+
   std::vector<Instance*> instanceContainer;
 };
 
