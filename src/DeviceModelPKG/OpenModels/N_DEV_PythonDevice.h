@@ -29,6 +29,10 @@
 #include <N_DEV_DeviceModel.h>
 #include <N_DEV_DeviceMaster.h>
 #include <N_DEV_PythonInterface.h>
+#include <cmath>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace Xyce {
 namespace Device {
@@ -48,14 +52,52 @@ private:
 class ResistorOutput {
 public:
     ResistorOutput(int index, double r, Input* vhigh, Input* vlow);
-    void set_state(int state) { state_ = state; }
-    int get_state() const { return state_; }
+    void set_state(int state) { state_ = state; clear_modes(); }
+    void set_pwm(double duty, double period, double start_time) {
+        if (period <= 0) return;
+        clear_modes();
+        if (duty <= 0){
+          state_ = 0;
+        } else if (duty >= 1){
+          state_ = 1;
+        } else {
+          duty_ = duty;
+          period_ = period;
+          start_time_ = start_time;
+          is_pwm_ = true;
+        }
+    }
+    int get_state(double current_time) const {
+        if (is_pattern_) {
+            if (pattern_.empty()) return state_;
+            auto it = pattern_.upper_bound(current_time + 1e-15);
+            if (it == pattern_.begin()) return state_;
+            return std::prev(it)->second;
+        }
+        if (!is_pwm_ || current_time < start_time_) return state_;
+        double dt = current_time - start_time_;
+        double num_cycles = std::floor(dt / period_);
+        double cycle_pos = dt - num_cycles * period_;
+        return (cycle_pos < duty_ * period_) ? 1 : 0;
+    }
+    bool is_pwm() const { return is_pwm_; }
+    double get_duty() const { return duty_; }
+    double get_period() const { return period_; }
+    double get_start_time() const { return start_time_; }
+    
     int get_index() const { return index_; }
     double get_r() const { return r_; }
     int get_vhigh_node() const;
     int get_vlow_node() const;
     double get_i() const { return current_; }
     void set_current(double i) { current_ = i; }
+    
+    void clear_modes() { is_pwm_ = false; is_pattern_ = false; }
+    void pattern(const std::string& arg, double start_time);
+    
+    bool is_pattern() const { return is_pattern_; }
+    const std::map<double, int>& get_pattern() const { return pattern_; }
+
 private:
     int index_;
     double r_;
@@ -63,6 +105,14 @@ private:
     Input* vlow_;
     int state_;
     double current_;
+    
+    bool is_pwm_{false};
+    double duty_{0};
+    double period_{0};
+    double start_time_{0};
+
+    bool is_pattern_{false};
+    std::map<double, int> pattern_;
 };
 
 class VoltageOutput {
@@ -115,7 +165,7 @@ struct Traits : public DeviceTraits<Model, Instance>
 {
     static const char *name() {return "Python Device";}
     static const char *deviceTypeName() {return "NPY level 1 (Python Device)";};
-    static int numNodes() {return 8;}
+    static int numNodes() {return 16;}
     static int numOptionalNodes() {return 0;}
     static bool isLinearDevice() {return false;}
 

@@ -22,6 +22,7 @@
 
 #include <N_DEV_PythonDevice.h>
 #include <set>
+#include <sstream>
 #include <N_DEV_SolverState.h>
 #include <N_DEV_Message.h>
 #include <N_LAS_Vector.h>
@@ -116,6 +117,114 @@ int ResistorOutput::get_vlow_node() const {
     return vlow_ ? vlow_->get_index() : -1;
 }
 
+namespace {
+double parse_xyce_value(std::string s) {
+    if (s.empty()) return 0;
+    size_t last;
+    double val = std::stod(s, &last);
+    std::string unit = s.substr(last);
+    if (unit == "u") val *= 1e-6;
+    else if (unit == "m") val *= 1e-3;
+    else if (unit == "n") val *= 1e-9;
+    else if (unit == "p") val *= 1e-12;
+    else if (unit == "f") val *= 1e-15;
+    else if (unit == "k") val *= 1e3;
+    else if (unit == "Meg") val *= 1e6;
+    else if (unit == "G") val *= 1e9;
+    else if (unit == "T") val *= 1e12;
+    return val;
+}
+
+std::string trim(const std::string& s) {
+    size_t first = s.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    size_t last = s.find_last_not_of(" \t\r\n");
+    return s.substr(first, (last - first + 1));
+}
+
+// Expand [seq]*N repeat groups, working from innermost outward
+std::string expand_repeats(const std::string& input) {
+    std::string s = input;
+    // Process innermost brackets first (no nested [ inside)
+    while (true) {
+        // Find the last '[' that has no nested '[' before its ']'
+        size_t open = std::string::npos;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '[') open = i;
+        }
+        if (open == std::string::npos) break;
+        
+        size_t close = s.find(']', open);
+        if (close == std::string::npos) break;
+        
+        std::string content = s.substr(open + 1, close - open - 1);
+        
+        // Parse *N after ']'
+        int repeat = 1;
+        size_t afterClose = close + 1;
+        if (afterClose < s.size() && s[afterClose] == '*') {
+            size_t numStart = afterClose + 1;
+            size_t numEnd = numStart;
+            while (numEnd < s.size() && (s[numEnd] >= '0' && s[numEnd] <= '9')) ++numEnd;
+            if (numEnd > numStart) {
+                repeat = std::stoi(s.substr(numStart, numEnd - numStart));
+                afterClose = numEnd;
+            }
+        }
+        
+        // Build repeated content
+        std::string expanded;
+        for (int i = 0; i < repeat; ++i) {
+            if (i > 0) expanded += ", ";
+            expanded += content;
+        }
+        
+        s = s.substr(0, open) + expanded + s.substr(afterClose);
+    }
+    return s;
+}
+}
+
+void ResistorOutput::pattern(const std::string& arg, double start_time) {
+    clear_modes();
+    pattern_.clear();
+    
+    // Expand [seq]*N repeat groups first
+    std::string expanded = expand_repeats(arg);
+    
+    std::vector<std::string> tokens;
+    std::string token;
+    std::istringstream tokenStream(expanded);
+    while (std::getline(tokenStream, token, ',')) {
+        tokens.push_back(trim(token));
+    }
+    
+    double currTime = start_time;
+    double nextTime = currTime;
+    bool timeSet = false;
+    
+    for (auto& t : tokens) {
+        if (t.find("dt=") == 0) {
+            nextTime = currTime + parse_xyce_value(t.substr(3));
+            timeSet = true;
+        } else if (t.find("t=") == 0) {
+            nextTime = parse_xyce_value(t.substr(2));
+            timeSet = true;
+        } else {
+            // Must be a state (0 or 1)
+            try {
+                int s = std::stoi(t);
+                pattern_[nextTime] = s;
+                currTime = nextTime;
+                timeSet = false;
+            } catch (...) {
+                // Ignore invalid tokens for now
+            }
+        }
+    }
+    is_pattern_ = true;
+}
+
 PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
     pybind11::class_<Input>(m, "Input")
         .def(pybind11::init<int>())
@@ -123,6 +232,20 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
     pybind11::class_<ResistorOutput>(m, "ResistorOutput")
         .def(pybind11::init<int, double, Input*, Input*>())
         .def("set_state", &ResistorOutput::set_state)
+        .def("set_pwm", [](ResistorOutput& ro, double duty, double period) {
+            if (g_activeInstance) {
+                ro.set_pwm(duty, period, g_activeInstance->getSolverState().currTime_);
+            }
+        }, pybind11::arg("duty"), pybind11::arg("period"))
+        .def("pattern", [](ResistorOutput& ro, const std::string& arg) {
+            if (g_activeInstance) {
+                ro.pattern(arg, g_activeInstance->getSolverState().currTime_);
+                // Add all pattern transition times as explicit breakpoints
+                for (auto it = ro.get_pattern().begin(); it != ro.get_pattern().end(); ++it) {
+                    g_activeInstance->add_breakpoint(it->first);
+                }
+            }
+        }, pybind11::arg("arg"))
         .def("get_i", &ResistorOutput::get_i);
     pybind11::class_<VoltageOutput>(m, "VoltageOutput")
         .def(pybind11::init<int>())
@@ -298,7 +421,7 @@ bool Instance::loadDAEFVector()
             int outLid = extLIDs_[outIdx];
             if (outLid < 0) continue;
             
-            int state = ro->get_state();
+            int state = ro->get_state(time);
             int srcIdx = (state == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
             int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
             
@@ -345,12 +468,14 @@ bool Instance::loadDAEdFdx()
 {
     if (!pyDevice_ || pyDevice_.is_none()) return true;
 
+    double time = getSolverState().currTime_;
+
     for (auto& ro : resistorOutputs_) {
         int outIdx = ro->get_index();
         int outLid = extLIDs_[outIdx];
         if (outLid < 0) continue;
         
-        int state = ro->get_state();
+        int state = ro->get_state(time);
         int srcIdx = (state == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
         int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
         
@@ -429,6 +554,37 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
     for (double t : nextBreakpoints_) {
         if (t >= currentTime - 1e-15) {
             breakPointTimes.push_back(Util::BreakPoint(t));
+        }
+    }
+    
+    // Add PWM breakpoints
+    for (auto& ro : resistorOutputs_) {
+        if (ro->is_pwm()) {
+            double start = ro->get_start_time();
+            if (currentTime < start) {
+                breakPointTimes.push_back(Util::BreakPoint(start));
+            }
+            double dt = std::max(0.0, currentTime - start);
+            double num_cycles = std::floor(dt / ro->get_period());
+            double cycle_start = start + num_cycles * ro->get_period();
+            
+            double next_mid = cycle_start + ro->get_duty() * ro->get_period();
+            if (next_mid > currentTime + 1e-15) breakPointTimes.push_back(Util::BreakPoint(next_mid));
+            
+            double next_end = cycle_start + ro->get_period();
+            if (next_end > currentTime + 1e-15) breakPointTimes.push_back(Util::BreakPoint(next_end));
+            
+            // To be safe, also add the following cycle
+            breakPointTimes.push_back(Util::BreakPoint(next_end + ro->get_duty() * ro->get_period()));
+            breakPointTimes.push_back(Util::BreakPoint(next_end + ro->get_period()));
+        }
+        if (ro->is_pattern()) {
+            for (auto it = ro->get_pattern().begin(); it != ro->get_pattern().end(); ++it) {
+                double time = it->first;
+                if (time > currentTime + 1e-15) {
+                    breakPointTimes.push_back(Util::BreakPoint(time));
+                }
+            }
         }
     }
     
