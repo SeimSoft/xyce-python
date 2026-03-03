@@ -132,7 +132,7 @@ jobs:
             export CC=mpicc
             export CXX=mpicxx
             export F77=mpif77
-          if [ "$RUNNER_OS" == "Windows" ]; then
+          elif [ "$RUNNER_OS" == "Windows" ]; then
             export CC=gcc
             export CXX=g++
             export F77=gfortran
