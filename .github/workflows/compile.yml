@@ -60,7 +60,7 @@ jobs:
 
       - name: Build and Install Trilinos
         if: steps.cache-trilinos.outputs.cache-hit != 'true'
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
         run: |
           wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
           mkdir -p trilinos-src trilinos-build trilinos-install
@@ -113,7 +113,7 @@ jobs:
           make install
 
       - name: Build and Install Xyce
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
         run: |
           ./bootstrap
           mkdir xyce-build
