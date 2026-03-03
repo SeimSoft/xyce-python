@@ -1,36 +1,181 @@
-# This is a basic workflow to help you get started with Actions
+name: Compile Xyce
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "master" branch
   push:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+      - name: Setup MSYS2 (Windows only)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-pybind11
+            mingw-w64-x86_64-suitesparse
+            mingw-w64-x86_64-fftw
+            mingw-w64-x86_64-openblas
+            mingw-w64-x86_64-autotools
+            bison
+            flex
+            wget
+            tar
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Install Dependencies (Ubuntu)
+        if: runner.os == 'Linux'
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ gfortran bison flex libsuitesparse-dev libopenblas-dev libfftw3-dev python3-dev pybind11-dev wget tar autoconf automake libtool
+
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake gcc bison flex suite-sparse openblas fftw python3 pybind11 wget autoconf automake libtool
+
+      - name: Cache Trilinos
+        id: cache-trilinos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/trilinos-install
+          key: trilinos-12.12.1-${{ runner.os }}-${{ hashFiles('.github/workflows/compile.yml') }}
+
+      - name: Build and Install Trilinos
+        if: steps.cache-trilinos.outputs.cache-hit != 'true'
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: |
+          wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
+          mkdir -p trilinos-src trilinos-build trilinos-install
+          tar -xzf trilinos.tar.gz -C trilinos-src --strip-components=1
+          cd trilinos-build
+
+          AMD_LIB_DIR=""
+          AMD_INC_DIR=""
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            AMD_LIB_DIR="$(brew --prefix suite-sparse)/lib"
+            AMD_INC_DIR="$(brew --prefix suite-sparse)/include/suitesparse"
+          elif [ "$RUNNER_OS" == "Linux" ]; then
+            AMD_LIB_DIR="/usr/lib/x86_64-linux-gnu"
+            AMD_INC_DIR="/usr/include/suitesparse"
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            AMD_LIB_DIR="/mingw64/lib"
+            AMD_INC_DIR="/mingw64/include/suitesparse"
+          fi
+
+          FLAGS="-O3 -fPIC"
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            # macOS CMake may pick clang incorrectly if CC is not exported
+            export CC=gcc-14
+            export CXX=g++-14
+            export F77=gfortran-14
+          else
+            export CC=gcc
+            export CXX=g++
+            export F77=gfortran
+          fi
+
+          cmake -G "Unix Makefiles" \
+            -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX" -D CMAKE_Fortran_COMPILER="$F77" \
+            -D CMAKE_CXX_FLAGS="$FLAGS" -D CMAKE_C_FLAGS="$FLAGS" -D CMAKE_Fortran_FLAGS="$FLAGS" \
+            -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/trilinos-install" \
+            -D Trilinos_ENABLE_NOX=ON -D NOX_ENABLE_LOCA=ON \
+            -D Trilinos_ENABLE_EpetraExt=ON -D EpetraExt_BUILD_BTF=ON -D EpetraExt_BUILD_EXPERIMENTAL=ON -D EpetraExt_BUILD_GRAPH_REORDERINGS=ON \
+            -D Trilinos_ENABLE_TrilinosCouplings=ON -D Trilinos_ENABLE_Ifpack=ON \
+            -D Trilinos_ENABLE_AztecOO=ON -D Trilinos_ENABLE_Belos=ON -D Trilinos_ENABLE_Teuchos=ON \
+            -D Trilinos_ENABLE_COMPLEX_DOUBLE=ON -D Trilinos_ENABLE_Amesos=ON -D Amesos_ENABLE_KLU=ON \
+            -D Trilinos_ENABLE_Amesos2=ON -D Amesos2_ENABLE_KLU2=ON -D Amesos2_ENABLE_Basker=ON \
+            -D Trilinos_ENABLE_Sacado=ON -D Trilinos_ENABLE_Stokhos=ON -D Trilinos_ENABLE_Kokkos=ON \
+            -D Trilinos_ENABLE_ALL_OPTIONAL_PACKAGES=OFF -D Trilinos_ENABLE_CXX11=ON \
+            -D TPL_ENABLE_AMD=ON -D AMD_LIBRARY_DIRS="$AMD_LIB_DIR" -D TPL_AMD_INCLUDE_DIRS="$AMD_INC_DIR" \
+            -D TPL_ENABLE_BLAS=ON -D TPL_ENABLE_LAPACK=ON \
+            -D Trilinos_SKIP_FORTRANCINTERFACE_VERIFY_TEST=ON \
+            ../trilinos-src
+            
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          make install
+
+      - name: Build and Install Xyce
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        run: |
+          ./bootstrap
+          mkdir xyce-build
+          cd xyce-build
+
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            export LEX="$(brew --prefix flex)/bin/flex"
+            export BISON="$(brew --prefix bison)/bin/bison"
+            
+            PYTHON_INC=$(python3-config --includes)
+            PYTHON_LDFLAGS=$(python3-config --ldflags --embed)
+            PYBIND11_INC="-I$(brew --prefix pybind11)/include"
+            
+            export CPPFLAGS="-I$(brew --prefix suite-sparse)/include/suitesparse -I$(brew --prefix suite-sparse)/include -I$(brew --prefix fftw)/include -I$(brew --prefix)/include $PYTHON_INC $PYBIND11_INC"
+            export LDFLAGS="-Wl,-framework,Accelerate -L$(brew --prefix suite-sparse)/lib -L$(brew --prefix fftw)/lib -L$(brew --prefix)/lib $PYTHON_LDFLAGS"
+            export CC=gcc-14
+            export CXX=g++-14
+            export F77=gfortran-14
+            export FC=gfortran-14
+            FLAGS="-O3 -Wno-deprecated -D_DARWIN_C_SOURCE"
+
+          elif [ "$RUNNER_OS" == "Linux" ]; then
+            export CPPFLAGS="$(python3-config --includes)"
+            export LDFLAGS="$(python3-config --ldflags --embed)"
+            export CC=gcc
+            export CXX=g++
+            export F77=gfortran
+            export FC=gfortran
+            FLAGS="-O3"
+
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            export CPPFLAGS="$(python3-config --includes) -I/mingw64/include/suitesparse"
+            export LDFLAGS="$(python3-config --ldflags --embed)"
+            export CC=gcc
+            export CXX=g++
+            export F77=gfortran
+            export FC=gfortran
+            FLAGS="-O3"
+          fi
+
+          export CXXFLAGS="$FLAGS"
+          export CFLAGS="$FLAGS"
+          export FFLAGS="$FLAGS"
+
+          ../configure \
+            --prefix="${{ github.workspace }}/xyce-install" \
+            ARCHDIR="${{ github.workspace }}/trilinos-install" \
+            --enable-stokhos \
+            --enable-amesos2 \
+            --enable-fftw
+
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          make install
+
+      - name: Package Binaries
+        shell: bash
+        run: |
+          cd ${{ github.workspace }}/xyce-install
+          tar -czvf ${{ github.workspace }}/xyce-${{ runner.os }}.tar.gz bin lib include
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xyce-binaries-${{ runner.os }}
+          path: ${{ github.workspace }}/xyce-${{ runner.os }}.tar.gz
