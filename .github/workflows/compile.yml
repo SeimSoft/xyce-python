@@ -87,6 +87,11 @@ jobs:
             mkdir -p trilinos-src
             tar -xzf trilinos.tar.gz -C trilinos-src --strip-components=1
           fi
+          
+          # Patch ancient CMake requirements that fail in macOS nested try_compile tests
+          find trilinos-src -name "CMakeLists.txt" -exec sed -i.bak 's/cmake_minimum_required(VERSION 2.8.11 .*)/cmake_minimum_required(VERSION 3.5)/g' {} +
+          find trilinos-src -name "CMakeLists.txt" -exec sed -i.bak 's/cmake_minimum_required(VERSION 2.8.11)/cmake_minimum_required(VERSION 3.5)/g' {} +
+          
           mkdir -p trilinos-build trilinos-install
           cd trilinos-build
 
