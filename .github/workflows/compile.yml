@@ -72,7 +72,6 @@ jobs:
 
       - name: Build and Install Trilinos
         if: steps.cache-trilinos.outputs.cache-hit != 'true'
-        shell: ${{ matrix.shell }}
         env:
           MSYS: winsymlinks:nativestrict
         run: |
