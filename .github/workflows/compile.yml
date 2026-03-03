@@ -89,8 +89,18 @@ jobs:
           fi
           
           # Patch ancient CMake requirements that fail in macOS nested try_compile tests
-          find trilinos-src -name "CMakeLists.txt" -exec sed -i.bak 's/cmake_minimum_required(VERSION 2.8.11 .*)/cmake_minimum_required(VERSION 3.5)/g' {} +
-          find trilinos-src -name "CMakeLists.txt" -exec sed -i.bak 's/cmake_minimum_required(VERSION 2.8.11)/cmake_minimum_required(VERSION 3.5)/g' {} +
+          python3 -c '
+          import os, re
+          for d, _, files in os.walk("trilinos-src"):
+              if "CMakeLists.txt" in files:
+                  path = os.path.join(d, "CMakeLists.txt")
+                  try:
+                      with open(path, "r", encoding="utf-8") as f: content = f.read()
+                      new_content = re.sub(r"(?i)cmake_minimum_required\s*\(\s*VERSION\s+[23]\.[0-9]+.*?\)", "cmake_minimum_required(VERSION 3.16)", content)
+                      if new_content != content:
+                          with open(path, "w", encoding="utf-8") as f: f.write(new_content)
+                  except Exception: pass
+          '
           
           mkdir -p trilinos-build trilinos-install
           cd trilinos-build
