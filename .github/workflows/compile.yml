@@ -72,6 +72,9 @@ jobs:
 
       - name: Build and Install Trilinos
         if: steps.cache-trilinos.outputs.cache-hit != 'true'
+        shell: ${{ matrix.shell }}
+        env:
+          MSYS: winsymlinks:nativestrict
         run: |
           wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
           mkdir -p trilinos-src trilinos-build trilinos-install
@@ -106,6 +109,7 @@ jobs:
           cmake -G "Unix Makefiles" \
             -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX" -D CMAKE_Fortran_COMPILER="$F77" \
             -D CMAKE_CXX_FLAGS="$FLAGS" -D CMAKE_C_FLAGS="$FLAGS" -D CMAKE_Fortran_FLAGS="$FLAGS" \
+            -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}/trilinos-install" \
             -D Trilinos_ENABLE_NOX=ON -D NOX_ENABLE_LOCA=ON \
             -D Trilinos_ENABLE_EpetraExt=ON -D EpetraExt_BUILD_BTF=ON -D EpetraExt_BUILD_EXPERIMENTAL=ON -D EpetraExt_BUILD_GRAPH_REORDERINGS=ON \
