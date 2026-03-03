@@ -54,6 +54,7 @@ jobs:
             bison
             flex
             wget
+            unzip
             tar
 
       - name: Install Dependencies (Ubuntu)
@@ -76,12 +77,17 @@ jobs:
 
       - name: Build and Install Trilinos
         if: steps.cache-trilinos.outputs.cache-hit != 'true'
-        env:
-          MSYS: winsymlinks:nativestrict
         run: |
-          wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
-          mkdir -p trilinos-src trilinos-build trilinos-install
-          tar -xzf trilinos.tar.gz -C trilinos-src --strip-components=1
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.zip -O trilinos.zip
+            unzip -q trilinos.zip
+            mv Trilinos-trilinos-release-12-12-1 trilinos-src
+          else
+            wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
+            mkdir -p trilinos-src
+            tar -xzf trilinos.tar.gz -C trilinos-src --strip-components=1
+          fi
+          mkdir -p trilinos-build trilinos-install
           cd trilinos-build
 
           AMD_LIB_DIR=""
@@ -97,7 +103,7 @@ jobs:
             AMD_INC_DIR="/mingw64/include/suitesparse"
           fi
 
-          FLAGS="-O3 -fPIC"
+          FLAGS="-O3 -fPIC -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
           if [ "$RUNNER_OS" == "macOS" ]; then
             # macOS CMake may pick clang incorrectly if CC is not exported
             export CC=gcc-14
