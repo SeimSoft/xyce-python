@@ -50,7 +50,7 @@ jobs:
             mingw-w64-x86_64-suitesparse
             mingw-w64-x86_64-fftw
             mingw-w64-x86_64-openblas
-            mingw-w64-x86_64-autotools
+            mingw-w64-x86_64-msmpi
             bison
             flex
             wget
@@ -61,12 +61,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ gfortran bison flex libsuitesparse-dev libopenblas-dev libfftw3-dev python3-dev pybind11-dev wget tar autoconf automake libtool
+          sudo apt-get install -y cmake g++ gfortran bison flex libsuitesparse-dev libopenblas-dev libfftw3-dev python3-dev pybind11-dev wget tar autoconf automake libtool libopenmpi-dev openmpi-bin
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake gcc bison flex suite-sparse openblas fftw python3 pybind11 wget autoconf automake libtool
+          brew install cmake gcc bison flex suite-sparse openblas fftw python3 pybind11 wget autoconf automake libtool open-mpi
 
       - name: Cache Trilinos
         id: cache-trilinos
@@ -110,11 +110,18 @@ jobs:
 
           FLAGS="-O3 -fPIC -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
           if [ "$RUNNER_OS" == "macOS" ]; then
-            # macOS CMake may pick clang incorrectly if CC is not exported
-            export CC=gcc-14
-            export CXX=g++-14
-            export F77=gfortran-14
-          else
+            # Force Homebrew OpenMPI to use gcc/g++ instead of clang
+            export OMPI_CC=gcc-14
+            export OMPI_CXX=g++-14
+            export OMPI_FC=gfortran-14
+            export CC=mpicc
+            export CXX=mpicxx
+            export F77=mpif77
+          elif [ "$RUNNER_OS" == "Linux" ]; then
+            export CC=mpicc
+            export CXX=mpicxx
+            export F77=mpif77
+          elif [ "$RUNNER_OS" == "Windows" ]; then
             export CC=gcc
             export CXX=g++
             export F77=gfortran
@@ -128,13 +135,16 @@ jobs:
             -D Trilinos_ENABLE_NOX=ON -D NOX_ENABLE_LOCA=ON \
             -D Trilinos_ENABLE_EpetraExt=ON -D EpetraExt_BUILD_BTF=ON -D EpetraExt_BUILD_EXPERIMENTAL=ON -D EpetraExt_BUILD_GRAPH_REORDERINGS=ON \
             -D Trilinos_ENABLE_TrilinosCouplings=ON -D Trilinos_ENABLE_Ifpack=ON \
+            -D Trilinos_ENABLE_Isorropia=ON \
             -D Trilinos_ENABLE_AztecOO=ON -D Trilinos_ENABLE_Belos=ON -D Trilinos_ENABLE_Teuchos=ON \
             -D Trilinos_ENABLE_COMPLEX_DOUBLE=ON -D Trilinos_ENABLE_Amesos=ON -D Amesos_ENABLE_KLU=ON \
             -D Trilinos_ENABLE_Amesos2=ON -D Amesos2_ENABLE_KLU2=ON -D Amesos2_ENABLE_Basker=ON \
             -D Trilinos_ENABLE_Sacado=ON -D Trilinos_ENABLE_Stokhos=ON -D Trilinos_ENABLE_Kokkos=ON \
+            -D Trilinos_ENABLE_Zoltan=ON \
             -D Trilinos_ENABLE_ALL_OPTIONAL_PACKAGES=OFF -D Trilinos_ENABLE_CXX11=ON \
             -D TPL_ENABLE_AMD=ON -D AMD_LIBRARY_DIRS="$AMD_LIB_DIR" -D TPL_AMD_INCLUDE_DIRS="$AMD_INC_DIR" \
             -D TPL_ENABLE_BLAS=ON -D TPL_ENABLE_LAPACK=ON \
+            -D TPL_ENABLE_MPI=ON \
             -D Trilinos_SKIP_FORTRANCINTERFACE_VERIFY_TEST=ON \
             ../trilinos-src
             
@@ -157,28 +167,35 @@ jobs:
             
             export CPPFLAGS="-I$(brew --prefix suite-sparse)/include/suitesparse -I$(brew --prefix suite-sparse)/include -I$(brew --prefix fftw)/include -I$(brew --prefix)/include $PYTHON_INC $PYBIND11_INC"
             export LDFLAGS="-Wl,-framework,Accelerate -L$(brew --prefix suite-sparse)/lib -L$(brew --prefix fftw)/lib -L$(brew --prefix)/lib $PYTHON_LDFLAGS"
-            export CC=gcc-14
-            export CXX=g++-14
-            export F77=gfortran-14
-            export FC=gfortran-14
+            export OMPI_CC=gcc-14
+            export OMPI_CXX=g++-14
+            export OMPI_FC=gfortran-14
+            export CC=mpicc
+            export CXX=mpicxx
+            export F77=mpif77
+            export FC=mpif90
             FLAGS="-O3 -Wno-deprecated -D_DARWIN_C_SOURCE"
 
           elif [ "$RUNNER_OS" == "Linux" ]; then
             export CPPFLAGS="$(python3-config --includes)"
             export LDFLAGS="$(python3-config --ldflags --embed)"
-            export CC=gcc
-            export CXX=g++
-            export F77=gfortran
-            export FC=gfortran
+            export CC=mpicc
+            export CXX=mpicxx
+            export F77=mpif77
+            export FC=mpif90
             FLAGS="-O3"
 
           elif [ "$RUNNER_OS" == "Windows" ]; then
-            export CPPFLAGS="$(python3-config --includes) -I/mingw64/include/suitesparse"
-            export LDFLAGS="$(python3-config --ldflags --embed)"
+            export CPPFLAGS="$(python3-config --includes) -I/mingw64/include/suitesparse -I/mingw64/include"
+            export LDFLAGS="$(python3-config --ldflags --embed) -lmsmpi"
             export CC=gcc
             export CXX=g++
             export F77=gfortran
             export FC=gfortran
+            export MPICC=gcc
+            export MPICXX=g++
+            export MPIF77=gfortran
+            export MPIFC=gfortran
             FLAGS="-O3"
           fi
 
@@ -189,6 +206,7 @@ jobs:
           ../configure \
             --prefix="${{ github.workspace }}/xyce-install" \
             ARCHDIR="${{ github.workspace }}/trilinos-install" \
+            --enable-mpi \
             --enable-stokhos \
             --enable-amesos2 \
             --enable-fftw
