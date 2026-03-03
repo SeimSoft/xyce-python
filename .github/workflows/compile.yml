@@ -23,7 +23,7 @@ jobs:
             shell: bash
           - os: macos-latest
             shell: bash
-          - os: macos-13
+          - os: macos-26-intel
             shell: bash
           - os: windows-latest
             shell: msys2 {0}
