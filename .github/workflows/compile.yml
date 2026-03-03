@@ -136,7 +136,7 @@ jobs:
             export CC=gcc
             export CXX=g++
             export F77=gfortran
-            FLAGS="$FLAGS -DTrilinos_ENABLE_Fortran=ON"
+            FLAGS="$FLAGS -DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON"
           fi
 
           cmake -G "Unix Makefiles" \
