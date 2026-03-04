@@ -62,7 +62,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ gfortran bison flex libsuitesparse-dev libopenblas-dev libfftw3-dev python3-dev pybind11-dev wget tar autoconf automake libtool libopenmpi-dev openmpi-bin
+          sudo apt-get install -y cmake g++ gfortran bison flex libfl-dev libsuitesparse-dev libopenblas-dev libfftw3-dev python3-dev pybind11-dev wget tar autoconf automake libtool libopenmpi-dev openmpi-bin
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
@@ -136,10 +136,12 @@ jobs:
             export CC=gcc
             export CXX=g++
             export F77=gfortran
-            FLAGS="$FLAGS -DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON"
+            CMAKE_EXTRA_ARGS="-DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON"
+          else
+            CMAKE_EXTRA_ARGS=""
           fi
 
-          cmake -G "Unix Makefiles" \
+          cmake -G "Unix Makefiles" $CMAKE_EXTRA_ARGS \
             -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX" -D CMAKE_Fortran_COMPILER="$F77" \
             -D CMAKE_CXX_FLAGS="$FLAGS" -D CMAKE_C_FLAGS="$FLAGS" -D CMAKE_Fortran_FLAGS="$FLAGS" \
             -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
