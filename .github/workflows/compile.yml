@@ -134,7 +134,7 @@ jobs:
               #endif
               """
               if "atomic_fetch_add(volatile long long int" not in content:
-                  content = content.replace('#include "impl/Kokkos_Atomic_Assembly.hpp"', mingw_atomics + '\\n#include "impl/Kokkos_Atomic_Assembly.hpp"')
+                  content = content.replace("#include \"impl/Kokkos_Atomic_Assembly.hpp\"", mingw_atomics + "\n#include \"impl/Kokkos_Atomic_Assembly.hpp\"")
                   
               with open(kokkos_atomic, "w", encoding="utf-8") as f: f.write(content)
           '
