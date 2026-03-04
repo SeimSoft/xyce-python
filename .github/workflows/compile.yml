@@ -177,8 +177,8 @@ jobs:
             PYTHON_LDFLAGS=$(python3-config --ldflags --embed)
             PYBIND11_INC="-I$(brew --prefix pybind11)/include"
             
-            export CPPFLAGS="-I$(brew --prefix suite-sparse)/include/suitesparse -I$(brew --prefix suite-sparse)/include -I$(brew --prefix fftw)/include -I$(brew --prefix)/include $PYTHON_INC $PYBIND11_INC"
-            export LDFLAGS="-Wl,-framework,Accelerate -L$(brew --prefix suite-sparse)/lib -L$(brew --prefix fftw)/lib -L$(brew --prefix)/lib $PYTHON_LDFLAGS"
+            export CPPFLAGS="-I$(brew --prefix suite-sparse)/include/suitesparse -I$(brew --prefix suite-sparse)/include -I$(brew --prefix fftw)/include -I$(brew --prefix)/include -I$(brew --prefix flex)/include $PYTHON_INC $PYBIND11_INC"
+            export LDFLAGS="-Wl,-framework,Accelerate -L$(brew --prefix suite-sparse)/lib -L$(brew --prefix fftw)/lib -L$(brew --prefix flex)/lib -L$(brew --prefix)/lib $PYTHON_LDFLAGS"
             export OMPI_CC=gcc-14
             export OMPI_CXX=g++-14
             export OMPI_FC=gfortran-14
@@ -216,6 +216,7 @@ jobs:
           export FFLAGS="$FLAGS"
 
           ../configure \
+            CC="$CC" CXX="$CXX" F77="$F77" FC="$FC" \
             --prefix="${{ github.workspace }}/xyce-install" \
             ARCHDIR="${{ github.workspace }}/trilinos-install" \
             --enable-mpi \
