@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-unix:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -20,44 +20,12 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            shell: bash
           - os: macos-latest
-            shell: bash
           - os: macos-26-intel
-            shell: bash
-          - os: windows-latest
-            shell: msys2 {0}
-
-    defaults:
-      run:
-        shell: ${{ matrix.shell }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Setup MSYS2 (Windows only)
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-python
-            mingw-w64-x86_64-pybind11
-            mingw-w64-x86_64-suitesparse
-            mingw-w64-x86_64-fftw
-            mingw-w64-x86_64-openblas
-            mingw-w64-x86_64-msmpi
-            mingw-w64-x86_64-gcc-fortran
-            make
-            bison
-            flex
-            wget
-            unzip
-            tar
 
       - name: Install Dependencies (Ubuntu)
         if: runner.os == 'Linux'
@@ -80,16 +48,10 @@ jobs:
       - name: Build and Install Trilinos
         if: steps.cache-trilinos.outputs.cache-hit != 'true'
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.zip -O trilinos.zip
-            unzip -q trilinos.zip
-            mv Trilinos-trilinos-release-12-12-1 trilinos-src
-          else
-            wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
-            mkdir -p trilinos-src
-            tar -xzf trilinos.tar.gz -C trilinos-src --strip-components=1
-          fi
-          
+          wget https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.tar.gz -O trilinos.tar.gz
+          mkdir -p trilinos-src
+          tar -xzf trilinos.tar.gz -C trilinos-src --strip-components=1
+
           # Patch ancient CMake requirements that fail in macOS nested try_compile tests
           python3 -c '
           import os, re
@@ -102,43 +64,8 @@ jobs:
                       if new_content != content:
                           with open(path, "w", encoding="utf-8") as f: f.write(new_content)
                   except Exception: pass
-          
-          kokkos_atomic = "trilinos-src/packages/kokkos/core/src/Kokkos_Atomic.hpp"
-          if os.path.exists(kokkos_atomic):
-              with open(kokkos_atomic, "r", encoding="utf-8") as f: content = f.read()
-              content = content.replace("#if defined(_WIN32)", "#if defined(_WIN32) && !defined(__MINGW32__)")
-              content = content.replace("#ifdef _WIN32", "#if defined(_WIN32) && !defined(__MINGW32__)")
-              content = content.replace("#ifndef _WIN32", "#if !defined(_WIN32) || defined(__MINGW32__)")
-              mingw_atomics = """
-              #ifdef __MINGW32__
-              namespace Kokkos {
-              inline long long int atomic_fetch_add(volatile long long int* const dest, const long long int val) { return __sync_fetch_and_add(dest, val); }
-              inline unsigned long long int atomic_fetch_add(volatile unsigned long long int* const dest, const unsigned long long int val) { return __sync_fetch_and_add(dest, val); }
-              inline long long int atomic_fetch_sub(volatile long long int* const dest, const long long int val) { return __sync_fetch_and_sub(dest, val); }
-              inline unsigned long long int atomic_fetch_sub(volatile unsigned long long int* const dest, const unsigned long long int val) { return __sync_fetch_and_sub(dest, val); }
-              inline long long int atomic_compare_exchange(volatile long long int* const dest, const long long int compare, const long long int val) { return __sync_val_compare_and_swap(dest, compare, val); }
-              inline unsigned long long int atomic_compare_exchange(volatile unsigned long long int* const dest, const unsigned long long int compare, const unsigned long long int val) { return __sync_val_compare_and_swap(dest, compare, val); }
-              inline long long int atomic_exchange(volatile long long int* const dest, const long long int val) {
-                long long int assumed;
-                long long int old = *dest;
-                do { assumed = old; old = __sync_val_compare_and_swap(dest, assumed, val); } while (assumed != old);
-                return old;
-              }
-              inline unsigned long long int atomic_exchange(volatile unsigned long long int* const dest, const unsigned long long int val) {
-                unsigned long long int assumed;
-                unsigned long long int old = *dest;
-                do { assumed = old; old = __sync_val_compare_and_swap(dest, assumed, val); } while (assumed != old);
-                return old;
-              }
-              }
-              #endif
-              """
-              if "atomic_fetch_add(volatile long long int" not in content:
-                  content = content.replace("#include \"impl/Kokkos_Atomic_Assembly.hpp\"", mingw_atomics + "\n#include \"impl/Kokkos_Atomic_Assembly.hpp\"")
-                  
-              with open(kokkos_atomic, "w", encoding="utf-8") as f: f.write(content)
           '
-          
+
           mkdir -p trilinos-build trilinos-install
           cd trilinos-build
 
@@ -150,9 +77,6 @@ jobs:
           elif [ "$RUNNER_OS" == "Linux" ]; then
             AMD_LIB_DIR="/usr/lib/x86_64-linux-gnu"
             AMD_INC_DIR="/usr/include/suitesparse"
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            AMD_LIB_DIR="/mingw64/lib"
-            AMD_INC_DIR="/mingw64/include/suitesparse"
           fi
 
           FLAGS="-O3 -fPIC -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
@@ -168,16 +92,9 @@ jobs:
             export CC=mpicc
             export CXX=mpicxx
             export F77=mpif77
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            export CC=gcc
-            export CXX=g++
-            export F77=gfortran
-            CMAKE_EXTRA_ARGS="-DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON -DTPL_BLAS_LIBRARIES=/mingw64/lib/libopenblas.dll.a -DTPL_LAPACK_LIBRARIES=/mingw64/lib/libopenblas.dll.a -DTPL_ENABLE_DLlib=OFF"
-          else
-            CMAKE_EXTRA_ARGS=""
           fi
 
-          cmake -G "Unix Makefiles" $CMAKE_EXTRA_ARGS \
+          cmake -G "Unix Makefiles" \
             -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX" -D CMAKE_Fortran_COMPILER="$F77" \
             -D CMAKE_CXX_FLAGS="$FLAGS" -D CMAKE_C_FLAGS="$FLAGS" -D CMAKE_Fortran_FLAGS="$FLAGS" \
             -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -197,7 +114,7 @@ jobs:
             -D TPL_ENABLE_MPI=ON \
             -D Trilinos_SKIP_FORTRANCINTERFACE_VERIFY_TEST=ON \
             ../trilinos-src
-            
+
           make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
           make install
 
@@ -210,11 +127,11 @@ jobs:
           if [ "$RUNNER_OS" == "macOS" ]; then
             export LEX="$(brew --prefix flex)/bin/flex"
             export BISON="$(brew --prefix bison)/bin/bison"
-            
+
             PYTHON_INC=$(python3-config --includes)
             PYTHON_LDFLAGS=$(python3-config --ldflags --embed)
             PYBIND11_INC="-I$(brew --prefix pybind11)/include"
-            
+
             export CPPFLAGS="-I$(brew --prefix suite-sparse)/include/suitesparse -I$(brew --prefix suite-sparse)/include -I$(brew --prefix fftw)/include -I$(brew --prefix)/include -I$(brew --prefix flex)/include $PYTHON_INC $PYBIND11_INC"
             export LDFLAGS="-Wl,-framework,Accelerate -L$(brew --prefix suite-sparse)/lib -L$(brew --prefix fftw)/lib -L$(brew --prefix flex)/lib -L$(brew --prefix)/lib $PYTHON_LDFLAGS"
             export OMPI_CC=gcc-14
@@ -233,19 +150,6 @@ jobs:
             export CXX=mpicxx
             export F77=mpif77
             export FC=mpif90
-            FLAGS="-O3"
-
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            export CPPFLAGS="$(python3-config --includes) -I/mingw64/include/suitesparse -I/mingw64/include"
-            export LDFLAGS="$(python3-config --ldflags --embed) -lmsmpi"
-            export CC=gcc
-            export CXX=g++
-            export F77=gfortran
-            export FC=gfortran
-            export MPICC=gcc
-            export MPICXX=g++
-            export MPIF77=gfortran
-            export MPIFC=gfortran
             FLAGS="-O3"
           fi
 
@@ -266,13 +170,111 @@ jobs:
           make install
 
       - name: Package Binaries
-        shell: bash
         run: |
           cd ${{ github.workspace }}/xyce-install
-          tar -czvf ${{ github.workspace }}/xyce-${{ runner.os }}.tar.gz bin lib include
+          tar -czvf ${{ github.workspace }}/xyce-${{ matrix.os }}.tar.gz bin lib include
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: xyce-binaries-${{ runner.os }}
-          path: ${{ github.workspace }}/xyce-${{ runner.os }}.tar.gz
+          name: xyce-${{ matrix.os }}
+          path: ${{ github.workspace }}/xyce-${{ matrix.os }}.tar.gz
+
+  build-windows:
+    name: Build on windows-latest
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install MS-MPI
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe" -OutFile msmpisetup.exe
+          Start-Process -FilePath .\msmpisetup.exe -ArgumentList "-unattend" -Wait
+          Invoke-WebRequest -Uri "https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisdk.msi" -OutFile msmpisdk.msi
+          Start-Process msiexec.exe -ArgumentList "/i msmpisdk.msi /quiet" -Wait
+          echo "MSMPI_INC=C:\Program Files (x86)\Microsoft SDKs\MPI\Include" >> $env:GITHUB_ENV
+          echo "MSMPI_LIB64=C:\Program Files (x86)\Microsoft SDKs\MPI\Lib\x64" >> $env:GITHUB_ENV
+          echo "C:\Program Files\Microsoft MPI\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Dependencies
+        shell: pwsh
+        run: |
+          choco install ninja cmake python3 winflexbison3 -y
+          pip install pybind11
+
+      - name: Cache Trilinos
+        id: cache-trilinos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\trilinos-install
+          key: trilinos-12.12.1-windows-msvc-v1
+
+      - name: Download and Patch Trilinos
+        if: steps.cache-trilinos.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/trilinos/Trilinos/archive/refs/tags/trilinos-release-12-12-1.zip" -OutFile trilinos.zip
+          Expand-Archive -Path trilinos.zip -DestinationPath .
+          Rename-Item -Path "Trilinos-trilinos-release-12-12-1" -NewName "trilinos-src"
+
+          # Patch ancient CMake requirements
+          python -c @"
+          import os, re
+          for d, _, files in os.walk('trilinos-src'):
+              if 'CMakeLists.txt' in files:
+                  path = os.path.join(d, 'CMakeLists.txt')
+                  try:
+                      with open(path, 'r', encoding='utf-8') as f: content = f.read()
+                      new_content = re.sub(r'(?i)cmake_minimum_required\s*\(\s*VERSION\s+[23]\.[0-9]+.*?\)', 'cmake_minimum_required(VERSION 3.16)', content)
+                      if new_content != content:
+                          with open(path, 'w', encoding='utf-8') as f: f.write(new_content)
+                  except Exception: pass
+          "@
+
+      - name: Build and Install Trilinos
+        if: steps.cache-trilinos.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          mkdir trilinos-build
+          mkdir trilinos-install
+          cd trilinos-build
+
+          cmake -G "Ninja" ^
+            -D CMAKE_C_COMPILER=cl -D CMAKE_CXX_COMPILER=cl ^
+            -D CMAKE_CXX_FLAGS="/O2 /EHsc /DWIN32" ^
+            -D CMAKE_C_FLAGS="/O2 /DWIN32" ^
+            -D CMAKE_POLICY_VERSION_MINIMUM=3.5 ^
+            -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}\trilinos-install" ^
+            -D Trilinos_ENABLE_Fortran=OFF ^
+            -D Trilinos_ENABLE_NOX=ON -D NOX_ENABLE_LOCA=ON ^
+            -D Trilinos_ENABLE_EpetraExt=ON -D EpetraExt_BUILD_BTF=ON -D EpetraExt_BUILD_EXPERIMENTAL=ON -D EpetraExt_BUILD_GRAPH_REORDERINGS=ON ^
+            -D Trilinos_ENABLE_TrilinosCouplings=ON -D Trilinos_ENABLE_Ifpack=ON ^
+            -D Trilinos_ENABLE_Isorropia=ON ^
+            -D Trilinos_ENABLE_AztecOO=ON -D Trilinos_ENABLE_Belos=ON -D Trilinos_ENABLE_Teuchos=ON ^
+            -D Trilinos_ENABLE_COMPLEX_DOUBLE=ON -D Trilinos_ENABLE_Amesos=ON -D Amesos_ENABLE_KLU=ON ^
+            -D Trilinos_ENABLE_Amesos2=ON -D Amesos2_ENABLE_KLU2=ON -D Amesos2_ENABLE_Basker=ON ^
+            -D Trilinos_ENABLE_Sacado=ON -D Trilinos_ENABLE_Stokhos=ON -D Trilinos_ENABLE_Kokkos=ON ^
+            -D Trilinos_ENABLE_Zoltan=ON ^
+            -D Trilinos_ENABLE_ALL_OPTIONAL_PACKAGES=OFF -D Trilinos_ENABLE_CXX11=ON ^
+            -D TPL_ENABLE_AMD=OFF ^
+            -D TPL_ENABLE_BLAS=ON -D TPL_ENABLE_LAPACK=ON ^
+            -D TPL_ENABLE_MPI=ON ^
+            -D MPI_BASE_DIR="C:\Program Files (x86)\Microsoft SDKs\MPI" ^
+            -D Trilinos_SKIP_FORTRANCINTERFACE_VERIFY_TEST=ON ^
+            ..\trilinos-src
+
+          ninja -j%NUMBER_OF_PROCESSORS%
+          ninja install
+
+      - name: Upload Trilinos Build Artifacts
+        if: steps.cache-trilinos.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trilinos-windows-msvc
+          path: ${{ github.workspace }}\trilinos-install
