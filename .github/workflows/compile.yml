@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/trilinos-install
-          key: trilinos-12.12.1-${{ runner.os }}-${{ hashFiles('.github/workflows/compile.yml') }}
+          key: trilinos-12.12.1-${{ matrix.os }}-v1
 
       - name: Build and Install Trilinos
         if: steps.cache-trilinos.outputs.cache-hit != 'true'
