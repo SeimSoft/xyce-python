@@ -251,7 +251,7 @@ jobs:
             -D CMAKE_C_FLAGS="/O2 /DWIN32" ^
             -D CMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -D CMAKE_INSTALL_PREFIX="${{ github.workspace }}\trilinos-install" ^
-            -D Trilinos_ENABLE_Fortran=OFF ^
+            -D Trilinos_ENABLE_Fortran=OFF -D Trilinos_ENABLE_Tpetra=ON ^
             -D Trilinos_ENABLE_NOX=ON -D NOX_ENABLE_LOCA=ON ^
             -D Trilinos_ENABLE_EpetraExt=ON -D EpetraExt_BUILD_BTF=ON -D EpetraExt_BUILD_EXPERIMENTAL=ON -D EpetraExt_BUILD_GRAPH_REORDERINGS=ON ^
             -D Trilinos_ENABLE_TrilinosCouplings=ON -D Trilinos_ENABLE_Ifpack=ON ^
