@@ -137,7 +137,7 @@ jobs:
             export CC=gcc
             export CXX=g++
             export F77=gfortran
-            CMAKE_EXTRA_ARGS="-DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON"
+            CMAKE_EXTRA_ARGS="-DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON -DTPL_BLAS_LIBRARIES=/mingw64/lib/libopenblas.dll.a -DTPL_LAPACK_LIBRARIES=/mingw64/lib/libopenblas.dll.a"
           else
             CMAKE_EXTRA_ARGS=""
           fi
