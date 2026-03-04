@@ -109,6 +109,34 @@ jobs:
               content = content.replace("#if defined(_WIN32)", "#if defined(_WIN32) && !defined(__MINGW32__)")
               content = content.replace("#ifdef _WIN32", "#if defined(_WIN32) && !defined(__MINGW32__)")
               content = content.replace("#ifndef _WIN32", "#if !defined(_WIN32) || defined(__MINGW32__)")
+              
+              mingw_atomics = """
+#ifdef __MINGW32__
+namespace Kokkos {
+inline long long int atomic_fetch_add(volatile long long int* const dest, const long long int val) { return __sync_fetch_and_add(dest, val); }
+inline unsigned long long int atomic_fetch_add(volatile unsigned long long int* const dest, const unsigned long long int val) { return __sync_fetch_and_add(dest, val); }
+inline long long int atomic_fetch_sub(volatile long long int* const dest, const long long int val) { return __sync_fetch_and_sub(dest, val); }
+inline unsigned long long int atomic_fetch_sub(volatile unsigned long long int* const dest, const unsigned long long int val) { return __sync_fetch_and_sub(dest, val); }
+inline long long int atomic_compare_exchange(volatile long long int* const dest, const long long int compare, const long long int val) { return __sync_val_compare_and_swap(dest, compare, val); }
+inline unsigned long long int atomic_compare_exchange(volatile unsigned long long int* const dest, const unsigned long long int compare, const unsigned long long int val) { return __sync_val_compare_and_swap(dest, compare, val); }
+inline long long int atomic_exchange(volatile long long int* const dest, const long long int val) {
+  long long int assumed;
+  long long int old = *dest;
+  do { assumed = old; old = __sync_val_compare_and_swap(dest, assumed, val); } while (assumed != old);
+  return old;
+}
+inline unsigned long long int atomic_exchange(volatile unsigned long long int* const dest, const unsigned long long int val) {
+  unsigned long long int assumed;
+  unsigned long long int old = *dest;
+  do { assumed = old; old = __sync_val_compare_and_swap(dest, assumed, val); } while (assumed != old);
+  return old;
+}
+}
+#endif
+"""
+              if "atomic_fetch_add(volatile long long int" not in content:
+                  content += mingw_atomics
+                  
               with open(kokkos_atomic, "w", encoding="utf-8") as f: f.write(content)
           '
           
@@ -145,7 +173,7 @@ jobs:
             export CC=gcc
             export CXX=g++
             export F77=gfortran
-            CMAKE_EXTRA_ARGS="-DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON -DTPL_BLAS_LIBRARIES=/mingw64/lib/libopenblas.dll.a -DTPL_LAPACK_LIBRARIES=/mingw64/lib/libopenblas.dll.a"
+            CMAKE_EXTRA_ARGS="-DTrilinos_ENABLE_Fortran=ON -DTrilinos_ENABLE_Tpetra=ON -DTPL_BLAS_LIBRARIES=/mingw64/lib/libopenblas.dll.a -DTPL_LAPACK_LIBRARIES=/mingw64/lib/libopenblas.dll.a -DTPL_ENABLE_DLlib=OFF"
           else
             CMAKE_EXTRA_ARGS=""
           fi
