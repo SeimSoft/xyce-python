@@ -102,6 +102,14 @@ jobs:
                       if new_content != content:
                           with open(path, "w", encoding="utf-8") as f: f.write(new_content)
                   except Exception: pass
+          
+          kokkos_atomic = "trilinos-src/packages/kokkos/core/src/Kokkos_Atomic.hpp"
+          if os.path.exists(kokkos_atomic):
+              with open(kokkos_atomic, "r", encoding="utf-8") as f: content = f.read()
+              content = content.replace("#if defined(_WIN32)", "#if defined(_WIN32) && !defined(__MINGW32__)")
+              content = content.replace("#ifdef _WIN32", "#if defined(_WIN32) && !defined(__MINGW32__)")
+              content = content.replace("#ifndef _WIN32", "#if !defined(_WIN32) || defined(__MINGW32__)")
+              with open(kokkos_atomic, "w", encoding="utf-8") as f: f.write(content)
           '
           
           mkdir -p trilinos-build trilinos-install
