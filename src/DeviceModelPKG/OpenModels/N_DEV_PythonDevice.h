@@ -76,9 +76,10 @@ public:
         }
         if (!is_pwm_ || current_time < start_time_) return state_;
         double dt = current_time - start_time_;
-        double num_cycles = std::floor(dt / period_);
+        // Use a small epsilon to avoid floor issues at exact period boundaries
+        double num_cycles = std::floor((dt + 1e-12) / period_);
         double cycle_pos = dt - num_cycles * period_;
-        return (cycle_pos < duty_ * period_) ? 1 : 0;
+        return (cycle_pos < duty_ * period_ + 1e-12) ? 1 : 0;
     }
     bool is_pwm() const { return is_pwm_; }
     double get_duty() const { return duty_; }

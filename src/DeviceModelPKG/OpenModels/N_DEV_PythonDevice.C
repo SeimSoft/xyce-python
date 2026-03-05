@@ -240,9 +240,10 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
         .def("pattern", [](ResistorOutput& ro, const std::string& arg) {
             if (g_activeInstance) {
                 ro.pattern(arg, g_activeInstance->getSolverState().currTime_);
-                // Add all pattern transition times as explicit breakpoints
+                // Add all pattern transition times as explicit breakpoints + buffer
                 for (auto it = ro.get_pattern().begin(); it != ro.get_pattern().end(); ++it) {
                     g_activeInstance->add_breakpoint(it->first);
+                    g_activeInstance->add_breakpoint(it->first + 1e-12);
                 }
             }
         }, pybind11::arg("arg"))
@@ -254,6 +255,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
             if (g_activeInstance) {
                 vo.transition_to(v, dt, g_activeInstance->getSolverState().currTime_);
                 g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt);
+                g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt + 1e-12);
             }
         }, pybind11::arg("v"), pybind11::arg("dt"));
     pybind11::class_<CurrentOutput>(m, "CurrentOutput")
@@ -263,6 +265,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
             if (g_activeInstance) {
                 co.transition_to(i, dt, g_activeInstance->getSolverState().currTime_);
                 g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt);
+                g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt + 1e-12);
             }
         }, pybind11::arg("i"), pybind11::arg("dt"));
     
@@ -561,28 +564,40 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
     for (auto& ro : resistorOutputs_) {
         if (ro->is_pwm()) {
             double start = ro->get_start_time();
-            if (currentTime < start) {
+            double period = ro->get_period();
+            double duty_time = ro->get_duty() * period;
+            
+            if (currentTime < start - 1e-15) {
                 breakPointTimes.push_back(Util::BreakPoint(start));
+                breakPointTimes.push_back(Util::BreakPoint(start + 1e-12));
             }
+            
+            // Find current cycle index
             double dt = std::max(0.0, currentTime - start);
-            double num_cycles = std::floor(dt / ro->get_period());
-            double cycle_start = start + num_cycles * ro->get_period();
+            double n = std::floor((dt + 1e-12) / period);
             
-            double next_mid = cycle_start + ro->get_duty() * ro->get_period();
-            if (next_mid > currentTime + 1e-15) breakPointTimes.push_back(Util::BreakPoint(next_mid));
+            // Candidate transition points in this and next cycle
+            double points[] = {
+                start + n * period,           // Start of current cycle
+                start + n * period + duty_time, // Mid of current cycle
+                start + (n + 1) * period,       // Start of next cycle
+                start + (n + 1) * period + duty_time // Mid of next cycle
+            };
             
-            double next_end = cycle_start + ro->get_period();
-            if (next_end > currentTime + 1e-15) breakPointTimes.push_back(Util::BreakPoint(next_end));
-            
-            // To be safe, also add the following cycle
-            breakPointTimes.push_back(Util::BreakPoint(next_end + ro->get_duty() * ro->get_period()));
-            breakPointTimes.push_back(Util::BreakPoint(next_end + ro->get_period()));
+            for (double p : points) {
+                if (p > currentTime + 1e-12) {
+                    breakPointTimes.push_back(Util::BreakPoint(p));
+                    // Add a tiny buffer step after the breakpoint to help integration
+                    breakPointTimes.push_back(Util::BreakPoint(p + 1e-12));
+                }
+            }
         }
         if (ro->is_pattern()) {
             for (auto it = ro->get_pattern().begin(); it != ro->get_pattern().end(); ++it) {
                 double time = it->first;
                 if (time > currentTime + 1e-15) {
                     breakPointTimes.push_back(Util::BreakPoint(time));
+                    breakPointTimes.push_back(Util::BreakPoint(time + 1e-12));
                 }
             }
         }
