@@ -70,16 +70,18 @@ public:
     int get_state(double current_time) const {
         if (is_pattern_) {
             if (pattern_.empty()) return state_;
-            auto it = pattern_.upper_bound(current_time + 1e-15);
+            // Shift back by 1e-15 so that at exactly current_time == change_time, we return the pre-jump state.
+            // This is required so Xyce's DAE solver does not see a discontinuous jump before the breakpoint.
+            auto it = pattern_.upper_bound(current_time - 1e-15);
             if (it == pattern_.begin()) return state_;
             return std::prev(it)->second;
         }
-        if (!is_pwm_ || current_time < start_time_) return state_;
-        double dt = current_time - start_time_;
-        // Use a small epsilon to avoid floor issues at exact period boundaries
-        double num_cycles = std::floor((dt + 1e-12) / period_);
+        // For PWM, shift back by 1e-15 to maintain the same property.
+        if (!is_pwm_ || current_time < start_time_ + 1e-15) return state_;
+        double dt = current_time - start_time_ - 1e-15;
+        double num_cycles = std::floor(dt / period_);
         double cycle_pos = dt - num_cycles * period_;
-        return (cycle_pos < duty_ * period_ + 1e-12) ? 1 : 0;
+        return (cycle_pos < duty_ * period_) ? 1 : 0;
     }
     bool is_pwm() const { return is_pwm_; }
     double get_duty() const { return duty_; }
