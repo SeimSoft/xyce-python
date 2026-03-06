@@ -6,7 +6,7 @@ concurrency:
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "release/*" ]
   pull_request:
     branches: [ "master" ]
   workflow_dispatch:
@@ -281,3 +281,27 @@ jobs:
         with:
           name: trilinos-windows-msvc
           path: ${{ github.workspace }}\trilinos-install
+
+  release:
+    name: Create GitHub Release
+    needs: [build-unix]
+    if: startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xyce-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          files: artifacts/*
+          draft: false
+          prerelease: false
