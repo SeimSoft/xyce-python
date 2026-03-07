@@ -74,7 +74,7 @@ void PythonInterface::addSearchPath(const std::string& path) {
     if (path.empty()) return;
     try {
         pybind11::module_ sys = pybind11::module_::import("sys");
-        sys.attr("path").attr("append")(path);
+        sys.attr("path").attr("insert")(0, path);
     } catch (const pybind11::error_already_set& e) {
         std::cerr << "Failed to add path to sys.path: " << e.what() << std::endl;
     }

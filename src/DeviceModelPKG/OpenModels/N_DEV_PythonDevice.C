@@ -242,6 +242,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
                 ro.pattern(arg, g_activeInstance->getSolverState().currTime_);
                 // Add all pattern transition times as explicit breakpoints + buffer
                 for (auto it = ro.get_pattern().begin(); it != ro.get_pattern().end(); ++it) {
+                    g_activeInstance->add_breakpoint(it->first - 1e-12);
                     g_activeInstance->add_breakpoint(it->first);
                     g_activeInstance->add_breakpoint(it->first + 1e-12);
                 }
@@ -254,6 +255,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
         .def("transition_to", [](VoltageOutput& vo, double v, double dt){
             if (g_activeInstance) {
                 vo.transition_to(v, dt, g_activeInstance->getSolverState().currTime_);
+                g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt - 1e-12);
                 g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt);
                 g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt + 1e-12);
             }
@@ -568,6 +570,7 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
             double duty_time = ro->get_duty() * period;
             
             if (currentTime < start - 1e-15) {
+                breakPointTimes.push_back(Util::BreakPoint(start - 1e-12));
                 breakPointTimes.push_back(Util::BreakPoint(start));
                 breakPointTimes.push_back(Util::BreakPoint(start + 1e-12));
             }
@@ -586,6 +589,7 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
             
             for (double p : points) {
                 if (p > currentTime + 1e-12) {
+                    breakPointTimes.push_back(Util::BreakPoint(p - 1e-12));
                     breakPointTimes.push_back(Util::BreakPoint(p));
                     // Add a tiny buffer step after the breakpoint to help integration
                     breakPointTimes.push_back(Util::BreakPoint(p + 1e-12));
@@ -596,6 +600,7 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
             for (auto it = ro->get_pattern().begin(); it != ro->get_pattern().end(); ++it) {
                 double time = it->first;
                 if (time > currentTime + 1e-15) {
+                    breakPointTimes.push_back(Util::BreakPoint(time - 1e-12));
                     breakPointTimes.push_back(Util::BreakPoint(time));
                     breakPointTimes.push_back(Util::BreakPoint(time + 1e-12));
                 }
