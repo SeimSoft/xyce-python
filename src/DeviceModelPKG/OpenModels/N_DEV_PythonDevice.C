@@ -53,8 +53,36 @@ namespace {
 Instance* g_activeInstance = nullptr;
 }
 
-Input::Input(int index) : index_(index), voltage_(0.0) {
+Input::Input(int index) : index_(index), voltage_(0.0), lastVoltage_(std::numeric_limits<double>::quiet_NaN()) {
     if (g_activeInstance) g_activeInstance->registerInput(this);
+}
+
+void Input::check_triggers(double currentTime) {
+    if (std::isnan(lastVoltage_)) {
+        lastVoltage_ = voltage_;
+        return;
+    }
+
+    for (auto& t : triggers_) {
+        bool fired = false;
+        if (t.direction == 1) { // Rising
+            if (lastVoltage_ < t.value && voltage_ >= t.value) fired = true;
+        } else if (t.direction == -1) { // Falling
+            if (lastVoltage_ > t.value && voltage_ <= t.value) fired = true;
+        } else if (t.direction == 0) { // Both
+            if ((lastVoltage_ < t.value && voltage_ >= t.value) ||
+                (lastVoltage_ > t.value && voltage_ <= t.value)) fired = true;
+        }
+
+        if (fired) {
+            try {
+                t.callback();
+            } catch (const pybind11::error_already_set& e) {
+                std::cerr << "Python trigger callback failed: " << e.what() << std::endl;
+            }
+        }
+    }
+    lastVoltage_ = voltage_;
 }
 
 ResistorOutput::ResistorOutput(int index, double r, Input* vhigh, Input* vlow)
@@ -228,7 +256,8 @@ void ResistorOutput::pattern(const std::string& arg, double start_time) {
 PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
     pybind11::class_<Input>(m, "Input")
         .def(pybind11::init<int>())
-        .def("get_v", &Input::get_v);
+        .def("get_v", &Input::get_v)
+        .def("trigger", &Input::trigger, pybind11::arg("callback"), pybind11::arg("event"), pybind11::arg("val"));
     pybind11::class_<ResistorOutput>(m, "ResistorOutput")
         .def(pybind11::init<int, double, Input*, Input*>())
         .def("set_state", &ResistorOutput::set_state)
@@ -542,6 +571,10 @@ void Instance::acceptStep()
             }
             if (pybind11::hasattr(pyDevice_, "accept_step")) {
                 pyDevice_.attr("accept_step")(time);
+            }
+            // Check triggers after update/accept_step
+            for (auto& in : inputs_) {
+                in->check_triggers(time);
             }
             g_activeInstance = nullptr;
         }

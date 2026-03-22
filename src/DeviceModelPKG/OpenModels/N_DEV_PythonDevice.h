@@ -38,15 +38,30 @@ namespace Xyce {
 namespace Device {
 namespace PythonDevice {
 
+struct Trigger {
+    pybind11::object callback;
+    int direction; // +1 for rising, -1 for falling, 0 for both (if implemented)
+    double value;
+};
+
 class Input {
 public:
     Input(int index);
     double get_v() const { return voltage_; }
     void set_voltage(double v) { voltage_ = v; }
     int get_index() const { return index_; }
+
+    void trigger(pybind11::object callback, int event, double val) {
+        triggers_.push_back({callback, event, val});
+    }
+
+    void check_triggers(double currentTime);
+
 private:
     int index_;
     double voltage_;
+    double lastVoltage_;
+    std::vector<Trigger> triggers_;
 };
 
 class ResistorOutput {
