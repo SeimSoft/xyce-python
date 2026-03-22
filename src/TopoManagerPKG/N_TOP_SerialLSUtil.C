@@ -241,7 +241,26 @@ bool SerialLSUtil::testVoltageNodeConnectivity_()
         num_gid = topology_.numAdjNodes( gid );
         if (num_gid <= 1)
         {
-          connToOneTermIDs_.insert( (*it_cnL)->get_id() );
+          bool is_npy_only = true;
+          std::vector<NodeID> adj_ids;
+          topology_.getMainGraph().returnAdjIDs( (*it_cnL)->get_nodeID(), adj_ids, false );
+          for (size_t k = 0; k < adj_ids.size(); ++k) {
+             CktNode* adj_node = topology_.getMainGraph().FindCktNode(adj_ids[k]);
+             if (adj_node && adj_node->type() == _DNODE) {
+                 std::string dev_id = adj_node->get_id();
+                 // Find the local device name (after the last unescaped colon or just the name)
+                 size_t pos = dev_id.rfind(':');
+                 std::string local_name = (pos != std::string::npos) ? dev_id.substr(pos+1) : dev_id;
+                 if (local_name.empty() || local_name[0] != 'N') {
+                     is_npy_only = false;
+                     break;
+                 }
+             } else {
+                 is_npy_only = false;
+                 break;
+             }
+          }
+          if (!is_npy_only) connToOneTermIDs_.insert( (*it_cnL)->get_id() );
         }
         gid_pos[gid] = num_nodes++; 
       }

@@ -260,7 +260,21 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
         .def("trigger", &Input::trigger, pybind11::arg("callback"), pybind11::arg("event"), pybind11::arg("val"));
     pybind11::class_<ResistorOutput>(m, "ResistorOutput")
         .def(pybind11::init<int, double, Input*, Input*>())
-        .def("set_state", &ResistorOutput::set_state)
+        .def("set_state", [](ResistorOutput& ro, int state) {
+            if (g_activeInstance) {
+                double currTime = g_activeInstance->getSolverState().currTime_;
+                if (ro.get_state(currTime) != state) {
+                    int old_state = ro.get_state(currTime);
+                    ro.set_state(old_state);
+                    std::ostringstream oss;
+                    oss << "dt=1p, " << state;
+                    ro.pattern(oss.str(), currTime);
+                    g_activeInstance->add_breakpoint(currTime + 1e-12);
+                }
+            } else {
+                ro.set_state(state);
+            }
+        })
         .def("set_pwm", [](ResistorOutput& ro, double duty, double period) {
             if (g_activeInstance) {
                 ro.set_pwm(duty, period, g_activeInstance->getSolverState().currTime_);
@@ -365,6 +379,10 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
     numExtVars = instance_block.numExtVars;
     numIntVars = 0;
     numStateVars = 0;
+    
+    // Provide a default DC path to ground (0) for all pins
+    // This prevents Xyce from warning "no DC path to ground" for unconnected controller pins.
+    devConMap.assign(numExtVars, 0);
 
     setDefaultParams();
     setParams(instance_block.params);
