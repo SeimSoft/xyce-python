@@ -23,6 +23,7 @@
 #ifndef Xyce_N_DEV_PythonInterface_h
 #define Xyce_N_DEV_PythonInterface_h
 
+#include <cstdio>
 #include <string>
 #include <memory>
 #include <pybind11/embed.h>

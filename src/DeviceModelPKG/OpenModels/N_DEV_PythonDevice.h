@@ -67,7 +67,15 @@ private:
 class ResistorOutput {
 public:
     ResistorOutput(int index, double r, Input* vhigh, Input* vlow);
-    void set_state(int state) { state_ = state; clear_modes(); }
+    void set_state(int state, double t) {
+        if (state != targetState_) {
+            startState_ = get_state(t);
+            targetState_ = state;
+            transitionStartTime_ = t;
+            inTransition_ = true;
+        }
+        clear_modes();
+    }
     void set_pwm(double duty, double period, double start_time) {
         if (period <= 0) return;
         clear_modes();
@@ -85,34 +93,61 @@ public:
     int get_state(double current_time) const {
         if (is_pattern_) {
             if (pattern_.empty()) return state_;
-            // Shift back by 1e-15 so that at exactly current_time == change_time, we return the pre-jump state.
-            // This is required so Xyce's DAE solver does not see a discontinuous jump before the breakpoint.
-            auto it = pattern_.upper_bound(current_time - 1e-15);
-            if (it == pattern_.begin()) return state_;
-            return std::prev(it)->second;
+            // Find the state at or before current_time
+            auto it = pattern_.upper_bound(current_time);
+            if (it == pattern_.begin()) return pattern_.begin()->second;
+            --it;
+            return it->second;
         }
-        // For PWM, shift back by 1e-15 to maintain the same property.
-        if (!is_pwm_ || current_time < start_time_ + 1e-15) return state_;
-        double dt = current_time - start_time_ - 1e-15;
-        double num_cycles = std::floor(dt / period_);
-        double cycle_pos = dt - num_cycles * period_;
-        return (cycle_pos < duty_ * period_) ? 1 : 0;
+        if (is_pwm_) {
+            double dt = current_time - start_time_;
+            if (dt < 0) return state_;
+            double cycle_time = std::fmod(dt, period_);
+            return (cycle_time < duty_ * period_) ? 1 : 0;
+        }
+        if (inTransition_) {
+             if (current_time >= transitionStartTime_ + 1e-10) {
+                 return targetState_;
+             }
+             // During the 100ps ramp, we return the target state for logic
+             // but we will use the ramped conductance in the residual.
+             return targetState_;
+        }
+        return state_;
     }
+
+    double get_transition_ratio(double t) const {
+        if (!inTransition_) return 1.0;
+        if (t <= transitionStartTime_) return 0.0;
+        if (t >= transitionStartTime_ + 1e-10) return 1.0;
+        return (t - transitionStartTime_) / 1e-10;
+    }
+
+    bool is_in_transition() const { return inTransition_; }
+    double get_transition_start_time() const { return transitionStartTime_; }
+    int get_start_state() const { return startState_; }
+    int get_target_state() const { return targetState_; }
+
+    void finalize_transition() {
+        state_ = targetState_;
+        inTransition_ = false;
+    }
+
     bool is_pwm() const { return is_pwm_; }
     double get_duty() const { return duty_; }
     double get_period() const { return period_; }
     double get_start_time() const { return start_time_; }
-    
+
     int get_index() const { return index_; }
     double get_r() const { return r_; }
     int get_vhigh_node() const;
     int get_vlow_node() const;
     double get_i() const { return current_; }
     void set_current(double i) { current_ = i; }
-    
+
     void clear_modes() { is_pwm_ = false; is_pattern_ = false; }
     void pattern(const std::string& arg, double start_time);
-    
+
     bool is_pattern() const { return is_pattern_; }
     const std::map<double, int>& get_pattern() const { return pattern_; }
 
@@ -123,7 +158,12 @@ private:
     Input* vlow_;
     int state_;
     double current_;
-    
+
+    int startState_{0};
+    int targetState_{0};
+    double transitionStartTime_{0};
+    bool inTransition_{false};
+
     bool is_pwm_{false};
     double duty_{0};
     double period_{0};
@@ -175,6 +215,26 @@ private:
     bool inTransition_;
 };
 
+class Device {
+public:
+    Device() = default;
+
+    void add_breakpoint(double t);
+    void delay(pybind11::object callback, double time_delay_s);
+    void process_due_delays(double currentTime);
+
+    pybind11::list delay_callbacks;
+
+private:
+    struct DelayEntry {
+        double fireTime;
+        pybind11::object callback;
+        bool fired;
+    };
+
+    std::vector<DelayEntry> delayEntries_;
+};
+
 class Model;
 class Instance;
 
@@ -187,7 +247,7 @@ struct Traits : public DeviceTraits<Model, Instance>
     static int numOptionalNodes() {return 0;}
     static bool isLinearDevice() {return false;}
 
-    static Device *factory(const Configuration &configuration, const FactoryBlock &factory_block);
+    static ::Xyce::Device::Device *factory(const Configuration &configuration, const FactoryBlock &factory_block);
     static void loadModelParameters(ParametricData<Model> &model_parameters);
     static void loadInstanceParameters(ParametricData<Instance> &instance_parameters);
 };
@@ -210,7 +270,7 @@ public:
 
   virtual void registerLIDs( const std::vector<int> & intLIDVecRef,
                              const std::vector<int> & extLIDVecRef );
-  
+
   virtual void registerJacLIDs( const std::vector< std::vector<int> > & jacLIDVec );
   virtual const std::vector< std::vector<int> > & jacobianStamp() const { return jacStamp_; }
 
@@ -219,10 +279,10 @@ public:
 
   virtual bool loadDAEFVector();
   virtual bool loadDAEdFdx();
-  
+
   virtual bool loadDAEQVector() { return true; }
   virtual bool loadDAEdQdx() { return true; }
-  
+
   virtual void acceptStep();
   virtual bool getInstanceBreakPoints(std::vector<Util::BreakPoint> & breakPointTimes);
 
@@ -236,9 +296,9 @@ public:
 
 private:
   pybind11::object pyDevice_;
-  
+
   Model & model_;
-  
+
   std::vector<int> extLIDs_;
   std::vector<std::vector<int>> jacLIDs_;
   std::vector<std::vector<int>> jacStamp_;
@@ -269,7 +329,7 @@ public:
   virtual void forEachInstance(DeviceInstanceOp &op) const;
   virtual std::ostream &printOutInstances(std::ostream &os) const;
 
-  void addInstance(Instance *instance) 
+  void addInstance(Instance *instance)
   {
     instanceContainer.push_back(instance);
   }

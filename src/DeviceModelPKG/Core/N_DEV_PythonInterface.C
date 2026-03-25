@@ -35,7 +35,7 @@ PythonInterface::PythonInterface() {
     try {
         if (!Py_IsInitialized()) {
             guard_.reset(new pybind11::scoped_interpreter());
-            
+
             // Add current directory to path
             pybind11::module_ sys = pybind11::module_::import("sys");
             sys.attr("path").attr("append")(".");
@@ -44,6 +44,7 @@ PythonInterface::PythonInterface() {
             // Inject classes into builtins
             pybind11::module_ device_mod = pybind11::module_::import("xyce_device");
             pybind11::module_ builtins = pybind11::module_::import("builtins");
+            builtins.attr("Device") = device_mod.attr("Device");
             builtins.attr("Input") = device_mod.attr("Input");
             builtins.attr("ResistorOutput") = device_mod.attr("ResistorOutput");
             builtins.attr("VoltageOutput") = device_mod.attr("VoltageOutput");

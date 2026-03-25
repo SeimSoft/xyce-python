@@ -53,6 +53,51 @@ namespace {
 Instance* g_activeInstance = nullptr;
 }
 
+void Device::add_breakpoint(double t) {
+    if (g_activeInstance) {
+        g_activeInstance->add_breakpoint(t);
+    }
+}
+
+void Device::delay(pybind11::object callback, double time_delay_s) {
+    if (!g_activeInstance) return;
+
+    if (time_delay_s < 0.0) {
+        time_delay_s = 0.0;
+    }
+
+    const double now = g_activeInstance->getSolverState().currTime_;
+    const double fireTime = now + time_delay_s;
+
+    delayEntries_.push_back({fireTime, callback, false});
+    delay_callbacks.append(pybind11::make_tuple(fireTime, callback));
+    g_activeInstance->add_breakpoint(fireTime);
+}
+
+void Device::process_due_delays(double currentTime) {
+    bool firedAny = true;
+    int guard = 0;
+    const int maxPasses = 10000;
+
+    // Re-run if callbacks schedule additional callbacks that are already due.
+    while (firedAny && guard < maxPasses) {
+        firedAny = false;
+        ++guard;
+
+        for (auto& entry : delayEntries_) {
+            if (!entry.fired && entry.fireTime <= currentTime + 1e-15) {
+                entry.fired = true;
+                firedAny = true;
+                try {
+                    entry.callback();
+                } catch (const pybind11::error_already_set& e) {
+                    std::cerr << "Python delay callback failed: " << e.what() << std::endl;
+                }
+            }
+        }
+    }
+}
+
 Input::Input(int index) : index_(index), voltage_(0.0), lastVoltage_(std::numeric_limits<double>::quiet_NaN()) {
     if (g_activeInstance) g_activeInstance->registerInput(this);
 }
@@ -86,7 +131,8 @@ void Input::check_triggers(double currentTime) {
 }
 
 ResistorOutput::ResistorOutput(int index, double r, Input* vhigh, Input* vlow)
-    : index_(index), r_(r), vhigh_(vhigh), vlow_(vlow), state_(0), current_(0.0) {
+    : index_(index), r_(r), vhigh_(vhigh), vlow_(vlow), state_(0), current_(0.0),
+      startState_(0), targetState_(0), inTransition_(false) {
     if (g_activeInstance) g_activeInstance->registerResistorOutput(this);
 }
 
@@ -181,12 +227,12 @@ std::string expand_repeats(const std::string& input) {
             if (s[i] == '[') open = i;
         }
         if (open == std::string::npos) break;
-        
+
         size_t close = s.find(']', open);
         if (close == std::string::npos) break;
-        
+
         std::string content = s.substr(open + 1, close - open - 1);
-        
+
         // Parse *N after ']'
         int repeat = 1;
         size_t afterClose = close + 1;
@@ -199,14 +245,14 @@ std::string expand_repeats(const std::string& input) {
                 afterClose = numEnd;
             }
         }
-        
+
         // Build repeated content
         std::string expanded;
         for (int i = 0; i < repeat; ++i) {
             if (i > 0) expanded += ", ";
             expanded += content;
         }
-        
+
         s = s.substr(0, open) + expanded + s.substr(afterClose);
     }
     return s;
@@ -216,21 +262,21 @@ std::string expand_repeats(const std::string& input) {
 void ResistorOutput::pattern(const std::string& arg, double start_time) {
     clear_modes();
     pattern_.clear();
-    
+
     // Expand [seq]*N repeat groups first
     std::string expanded = expand_repeats(arg);
-    
+
     std::vector<std::string> tokens;
     std::string token;
     std::istringstream tokenStream(expanded);
     while (std::getline(tokenStream, token, ',')) {
         tokens.push_back(trim(token));
     }
-    
+
     double currTime = start_time;
     double nextTime = currTime;
     bool timeSet = false;
-    
+
     for (auto& t : tokens) {
         if (t.find("dt=") == 0) {
             nextTime = currTime + parse_xyce_value(t.substr(3));
@@ -254,6 +300,12 @@ void ResistorOutput::pattern(const std::string& arg, double start_time) {
 }
 
 PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
+    pybind11::class_<Device>(m, "Device")
+        .def(pybind11::init<>())
+        .def("add_breakpoint", &Device::add_breakpoint, pybind11::arg("t"))
+        .def("delay", &Device::delay, pybind11::arg("callback"), pybind11::arg("time_delay_s"))
+        .def_readonly("delay_callbacks", &Device::delay_callbacks);
+
     pybind11::class_<Input>(m, "Input")
         .def(pybind11::init<int>())
         .def("get_v", &Input::get_v)
@@ -263,18 +315,27 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
         .def("set_state", [](ResistorOutput& ro, int state) {
             if (g_activeInstance) {
                 double currTime = g_activeInstance->getSolverState().currTime_;
-                if (ro.get_state(currTime) != state) {
-                    int old_state = ro.get_state(currTime);
-                    ro.set_state(old_state);
-                    std::ostringstream oss;
-                    oss << "dt=1p, " << state;
-                    ro.pattern(oss.str(), currTime);
+
+                // Only inject extra breakpoints when set_state actually changes
+                // target behavior (state target or mode switch from PWM/pattern).
+                int prevTarget = ro.get_target_state();
+                bool prevPwm = ro.is_pwm();
+                bool prevPattern = ro.is_pattern();
+
+                ro.set_state(state, currTime);
+
+                bool changed = (ro.get_target_state() != prevTarget) || prevPwm || prevPattern;
+                if (changed) {
+                    // Add breakpoints to sharpen the transition in the output.
+                    g_activeInstance->add_breakpoint(currTime);
                     g_activeInstance->add_breakpoint(currTime + 1e-12);
+                    g_activeInstance->add_breakpoint(currTime + 1e-10);
                 }
             } else {
-                ro.set_state(state);
+                ro.set_state(state, 0.0);
             }
         })
+        .def("get_state", &ResistorOutput::get_state)
         .def("set_pwm", [](ResistorOutput& ro, double duty, double period) {
             if (g_activeInstance) {
                 ro.set_pwm(duty, period, g_activeInstance->getSolverState().currTime_);
@@ -313,7 +374,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
                 g_activeInstance->add_breakpoint(g_activeInstance->getSolverState().currTime_ + dt + 1e-12);
             }
         }, pybind11::arg("i"), pybind11::arg("dt"));
-    
+
     m.def("add_breakpoint", [](double t) {
         if (g_activeInstance) g_activeInstance->add_breakpoint(t);
     });
@@ -326,7 +387,7 @@ PYBIND11_EMBEDDED_MODULE(xyce_device, m) {
 
 
 
-Device *Traits::factory(const Configuration &configuration, const FactoryBlock &factory_block)
+::Xyce::Device::Device *Traits::factory(const Configuration &configuration, const FactoryBlock &factory_block)
 
 {
     return new DeviceMaster<Traits>(configuration, factory_block, factory_block.solverState_, factory_block.deviceOptions_);
@@ -379,10 +440,6 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
     numExtVars = instance_block.numExtVars;
     numIntVars = 0;
     numStateVars = 0;
-    
-    // Provide a default DC path to ground (0) for all pins
-    // This prevents Xyce from warning "no DC path to ground" for unconnected controller pins.
-    devConMap.assign(numExtVars, 0);
 
     setDefaultParams();
     setParams(instance_block.params);
@@ -397,8 +454,12 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
         if (!model.moduleName_.empty() && !model.className_.empty()) {
             pyDevice_ = PythonInterface::getInstance().createDevice(model.moduleName_, model.className_);
             if (pyDevice_.is_none()) {
-                Xyce::Device::UserFatal0(*this) << "Python device instantiation failed. Module: " 
+                Xyce::Device::UserFatal0(*this) << "Python device instantiation failed. Module: "
                                                 << model.moduleName_ << " Class: " << model.className_;
+            }
+            if (!pybind11::isinstance<Device>(pyDevice_)) {
+                Xyce::Device::UserFatal0(*this) << "Python class '" << model.className_
+                                                << "' must inherit from xyce_device.Device.";
             }
         }
     } catch (const pybind11::error_already_set& e) {
@@ -433,7 +494,7 @@ Instance::Instance(const Configuration &configuration, const InstanceBlock &inst
             jacStamp_[i][j] = j;
         }
     }
-    
+
     model.addInstance(this);
 }
 
@@ -457,48 +518,82 @@ bool Instance::loadDAEFVector()
 
     try {
         double time = getSolverState().currTime_;
-        
-        // Update input voltages at every iteration so they are available for any logic
-        // though currently Python update is move to acceptStep.
+
+        // Update input voltages at every iteration
         for (auto& in : inputs_) {
             int lid = extLIDs_[in->get_index()];
             if (lid >= 0) in->set_voltage((*extData.nextSolVectorPtr)[lid]);
             else in->set_voltage(0.0);
         }
 
+        // Universal GMIN 1e-6 (1 Meg pull-down) for every pin for stability
+        for (int i = 0; i < numExtVars; ++i) {
+            int lid = extLIDs_[i];
+            if (lid >= 0) {
+                double v = (*extData.nextSolVectorPtr)[lid];
+                (*extData.daeFVectorPtr)[lid] += v * 1e-6;
+            }
+        }
 
         // Load residuals from resistor outputs
         for (auto& ro : resistorOutputs_) {
             int outIdx = ro->get_index();
             int outLid = extLIDs_[outIdx];
             if (outLid < 0) continue;
-            
-            int state = ro->get_state(time);
-            int srcIdx = (state == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
-            int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
-            
+
+            double ratio = ro->get_transition_ratio(time);
             double vOut = (*extData.nextSolVectorPtr)[outLid];
-            double vSrc = (srcLid >= 0) ? (*extData.nextSolVectorPtr)[srcLid] : 0.0;
-            
-            double i = (vOut - vSrc) / ro->get_r();
+            double r = ro->get_r();
+
+            // Total current is the sum of currents from the two states weighted by transition ratio
+            // state 1 current (if target is 1, ratio goes 0 to 1)
+            // state 0 current (if target is 0, ratio goes 1 to 0? No, ratio is always progress start->target)
+
+            int startS = ro->is_in_transition() ? ro->get_start_state() : ro->get_state(time);
+            int targetS = ro->is_in_transition() ? ro->get_target_state() : ro->get_state(time);
+
+            auto get_i_for_state = [&](int s) {
+                int srcIdx = (s == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
+                int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
+                double vSrc = (srcLid >= 0) ? (*extData.nextSolVectorPtr)[srcLid] : 0.0;
+                return (vOut - vSrc) / r;
+            };
+
+            double i_start = get_i_for_state(startS);
+            double i_target = get_i_for_state(targetS);
+            double i = i_start * (1.0 - ratio) + i_target * ratio;
             ro->set_current(i);
-            
+
             (*extData.daeFVectorPtr)[outLid] += i;
-            if (srcLid >= 0) {
-                (*extData.daeFVectorPtr)[srcLid] -= i;
-            }
+
+            auto add_dual_resid = [&](int s, double weight) {
+                if (weight == 0) return;
+                int srcIdx = (s == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
+                int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
+                if (srcLid >= 0) {
+                    double vSrc = (*extData.nextSolVectorPtr)[srcLid];
+                    double cur_i = (vOut - vSrc) / r;
+                    (*extData.daeFVectorPtr)[srcLid] -= cur_i * weight;
+                }
+            };
+
+            add_dual_resid(startS, 1.0 - ratio);
+            add_dual_resid(targetS, ratio);
         }
-        
-        // Load voltage outputs (penalty method)
-        for (auto& vo : voltageOutputs_) {
-            int lid = extLIDs_[vo->get_index()];
+
+        // Load voltage outputs (penalty method G=1e3)
+        auto load_vo = [&](VoltageOutput* vo) {
+            int voIdx = vo->get_index();
+            int lid = extLIDs_[voIdx];
             if (lid >= 0) {
                 double v = (*extData.nextSolVectorPtr)[lid];
-                double g = 1e6; // Conductance (stiff source)
-                (*extData.daeFVectorPtr)[lid] += (v - vo->get_current_value(time)) * g;
+                double target = vo->get_current_value(time);
+                (*extData.daeFVectorPtr)[lid] += (v - target) * 1e3;
             }
-        }
-        
+        };
+        for (auto& vo : voltageOutputs_) load_vo(vo);
+        for (auto& vo : defaultVoltageOutputs_) load_vo(vo.get());
+
         // Load current outputs
         for (auto& co : currentOutputs_) {
             int lid = extLIDs_[co->get_index()];
@@ -521,41 +616,53 @@ bool Instance::loadDAEdFdx()
     if (!pyDevice_ || pyDevice_.is_none()) return true;
 
     double time = getSolverState().currTime_;
+    // Load GMIN and stiff sources Jacobian
+    auto load_v_jac = [&](int idx, double g) {
+        int lid = extLIDs_[idx];
+        if (lid >= 0) {
+            (*extData.dFdxMatrixPtr)[lid][jacLIDs_[idx][idx]] += g;
+        }
+    };
+
+    // Universal GMIN 1e-6 (1 Meg pull-down) for every pin for stability
+    for (int i = 0; i < numExtVars; ++i) load_v_jac(i, 1e-6);
 
     for (auto& ro : resistorOutputs_) {
         int outIdx = ro->get_index();
         int outLid = extLIDs_[outIdx];
         if (outLid < 0) continue;
-        
-        int state = ro->get_state(time);
-        int srcIdx = (state == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
-        int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
-        
+
+        double ratio = ro->get_transition_ratio(time);
         double g = 1.0 / ro->get_r();
-        
-        // dIout/dVout
+
+        int startS = ro->is_in_transition() ? ro->get_start_state() : ro->get_state(time);
+        int targetS = ro->is_in_transition() ? ro->get_target_state() : ro->get_state(time);
+
+        // Resistor Diagonal contribution
         (*extData.dFdxMatrixPtr)[outLid][jacLIDs_[outIdx][outIdx]] += g;
-        
-        if (srcLid >= 0) {
-            // dIout/dVsrc
-            (*extData.dFdxMatrixPtr)[outLid][jacLIDs_[outIdx][srcIdx]] -= g;
-            // dIsrc/dVout
-            (*extData.dFdxMatrixPtr)[srcLid][jacLIDs_[srcIdx][outIdx]] -= g;
-            // dIsrc/dVsrc
-            (*extData.dFdxMatrixPtr)[srcLid][jacLIDs_[srcIdx][srcIdx]] += g;
-        }
+
+        auto add_dual_jac = [&](int s, double weight) {
+            if (weight == 0) return;
+            int srcIdx = (s == 1) ? ro->get_vhigh_node() : ro->get_vlow_node();
+            int srcLid = (srcIdx >= 0) ? extLIDs_[srcIdx] : -1;
+            if (srcLid >= 0) {
+                (*extData.dFdxMatrixPtr)[outLid][jacLIDs_[outIdx][srcIdx]] -= g * weight;
+                (*extData.dFdxMatrixPtr)[srcLid][jacLIDs_[srcIdx][outIdx]] -= g * weight;
+                (*extData.dFdxMatrixPtr)[srcLid][jacLIDs_[srcIdx][srcIdx]] += g * weight;
+            }
+        };
+
+        add_dual_jac(startS, 1.0 - ratio);
+        add_dual_jac(targetS, ratio);
     }
-    
-    // Voltage outputs Jacobian
-    for (auto& vo : voltageOutputs_) {
-        int idx = vo->get_index();
-        int lid = extLIDs_[idx];
-        if (lid >= 0) {
-            double g = 1e6;
-            (*extData.dFdxMatrixPtr)[lid][jacLIDs_[idx][idx]] += g;
-        }
-    }
-    
+
+    // Voltage outputs Jacobian (penalty conductance G=1e3)
+    auto load_vo_jac = [&](VoltageOutput* vo) {
+        load_v_jac(vo->get_index(), 1e3);
+    };
+    for (auto& vo : voltageOutputs_) load_vo_jac(vo);
+    for (auto& vo : defaultVoltageOutputs_) load_vo_jac(vo.get());
+
     return true;
 }
 
@@ -566,7 +673,7 @@ void Instance::acceptStep()
 
     try {
         double time = getSolverState().currTime_;
-        
+
         // Remove past breakpoints definitively
         auto it = nextBreakpoints_.begin();
         while (it != nextBreakpoints_.end() && *it < time - 1e-12) {
@@ -580,10 +687,21 @@ void Instance::acceptStep()
             else in->set_voltage(0.0);
         }
 
+        // Finalize any finished resistor output transitions
+        for (auto& ro : resistorOutputs_) {
+            if (ro->is_in_transition() && time >= ro->get_transition_start_time() + 1e-10) {
+                ro->finalize_transition();
+            }
+        }
+
         // Only call Python update when time has actually advanced
         if (time > lastUpdateTime_ + 1e-15) {
             lastUpdateTime_ = time;
             g_activeInstance = this;
+            if (pybind11::isinstance<Device>(pyDevice_)) {
+                auto& deviceBase = pyDevice_.cast<Device&>();
+                deviceBase.process_due_delays(time);
+            }
             if (pybind11::hasattr(pyDevice_, "update")) {
                 pyDevice_.attr("update")(time);
             }
@@ -605,31 +723,31 @@ void Instance::acceptStep()
 bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointTimes)
 {
     double currentTime = getSolverState().currTime_;
-    
+
     // Add all future breakpoints to Xyce
     for (double t : nextBreakpoints_) {
         if (t >= currentTime - 1e-15) {
             breakPointTimes.push_back(Util::BreakPoint(t));
         }
     }
-    
+
     // Add PWM breakpoints
     for (auto& ro : resistorOutputs_) {
         if (ro->is_pwm()) {
             double start = ro->get_start_time();
             double period = ro->get_period();
             double duty_time = ro->get_duty() * period;
-            
+
             if (currentTime < start - 1e-15) {
                 breakPointTimes.push_back(Util::BreakPoint(start - 1e-12));
                 breakPointTimes.push_back(Util::BreakPoint(start));
                 breakPointTimes.push_back(Util::BreakPoint(start + 1e-12));
             }
-            
+
             // Find current cycle index
             double dt = std::max(0.0, currentTime - start);
             double n = std::floor((dt + 1e-12) / period);
-            
+
             // Candidate transition points in this and next cycle
             double points[] = {
                 start + n * period,           // Start of current cycle
@@ -637,7 +755,7 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
                 start + (n + 1) * period,       // Start of next cycle
                 start + (n + 1) * period + duty_time // Mid of next cycle
             };
-            
+
             for (double p : points) {
                 if (p > currentTime + 1e-12) {
                     breakPointTimes.push_back(Util::BreakPoint(p - 1e-12));
@@ -658,7 +776,7 @@ bool Instance::getInstanceBreakPoints(std::vector<Util::BreakPoint> &breakPointT
             }
         }
     }
-    
+
     return true;
 }
 
@@ -671,14 +789,14 @@ void Instance::loadNodeSymbols(Util::SymbolTable &symbol_table) const
   }
 }
 
-void registerDevice(const DeviceCountMap& deviceMap, const std::set<int>& levelSet) 
+void registerDevice(const DeviceCountMap& deviceMap, const std::set<int>& levelSet)
 {
   static bool initialized = false;
 
   //std::cout << "DEBUG PythonDevice::registerDevice: deviceMap size=" << deviceMap.size() << std::endl;
   //if (deviceMap.find("N") != deviceMap.end()) std::cout << "DEBUG PythonDevice::registerDevice: 'N' found in deviceMap" << std::endl;
 
-  if (!initialized && (deviceMap.empty() || (deviceMap.find("N")!=deviceMap.end()))) 
+  if (!initialized && (deviceMap.empty() || (deviceMap.find("N")!=deviceMap.end())))
   {
     initialized = true;
     //std::cout << "DEBUG PythonDevice::registerDevice: Registering 'n' and 'npy'" << std::endl;
