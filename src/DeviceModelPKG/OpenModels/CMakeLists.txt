@@ -66,3 +66,5 @@ target_include_directories(XyceLib PUBLIC
 set ( XYCE_PACKAGE_LIBRARIES ${XYCE_PACKAGE_LIBRARIES}
       OpenModels
       CACHE INTERNAL "X_L" )
+
+install(FILES xyce_device.py DESTINATION python)

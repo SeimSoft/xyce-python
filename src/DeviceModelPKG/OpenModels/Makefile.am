@@ -106,3 +106,8 @@ libOpenModels_la_SOURCES = \
   N_DEV_PowerGridGenBus.h \
   N_DEV_AntiWindupLimiter.h \
   N_DEV_PythonDevice.h 
+
+pythondir = $(prefix)/python
+python_DATA = xyce_device.py
+
+EXTRA_DIST = xyce_device.py
